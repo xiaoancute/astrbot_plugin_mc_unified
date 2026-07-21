@@ -1,9 +1,24 @@
+# Python bytecode and native extensions
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
+# Virtual environments and local Python settings
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.direnv/
+.envrc
+.python-version
 .Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Packaging and build output
 build/
 develop-eggs/
 dist/
@@ -17,83 +32,98 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+*.egg
 *.egg-info/
 .installed.cfg
-*.egg
 MANIFEST
-
 *.manifest
 *.spec
+pip-wheel-metadata/
 
-pip-log.txt
-pip-delete-this-directory.txt
-
-htmlcov/
+# Tests, coverage, linters, and type checkers
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.hypothesis/
 .tox/
 .nox/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
 coverage.xml
+htmlcov/
+cover/
 *.cover
 *.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+nosetests.xml
 
+# Compiled translations
 *.mo
 *.pot
 
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# IDE and editor files
+.idea/
+.vscode/
+.fleet/
+*.code-workspace
+*.swp
+*.swo
+*~
 
-instance/
-.webassets-cache
+# Operating-system metadata
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
 
-.scrapy
-
-docs/_build/
-
-.pybuilder/
-target/
-
-.ipynb_checkpoints
-
-profile_default/
-ipython_config.py
-
+# Secrets and machine-local configuration
 .env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-.spyderproject
-.spyproject
-
-.ropeproject
-
-/site
-
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-.pyre/
-
-.pytype/
-
-cython_debug/
-
-.ruff_cache/
-
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 .pypirc
 
+# AstrBot and plugin runtime state
 data/
+runtime/
+logs/
+instance/
 bindings.json
+*.log
+*.pid
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Temporary and generated files
+.cache/
+.webassets-cache
+.ipynb_checkpoints/
+docs/_build/
+target/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Tool-specific local state
+.scrapy/
+.pybuilder/
+.spyderproject
+.spyproject
+.ropeproject/
+profile_default/
+ipython_config.py
+cython_debug/
+local_settings.py
+/site/
