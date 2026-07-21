@@ -8,7 +8,7 @@
   "mc_servers": {
     "type": "template_list",
     "description": "Minecraft服务器列表",
-    "hint": "添加多个命名服务器。配置此列表后，下方旧版单服连接配置将不再生效",
+    "hint": "统一管理的服务器清单。每台服务器可直接被命令和LLM工具指定；配置后旧版单服连接项不再生效",
     "default": [],
     "templates": {
       "server": {
@@ -23,7 +23,7 @@
           "server_id": {
             "type": "string",
             "description": "服务器ID",
-            "hint": "唯一标识，例如 survival、creative、modded；用于命令、群绑定和LLM工具选择",
+            "hint": "唯一标识，例如 server-1、server-2；用于命令和LLM工具，也可用于可选的聊天转发绑定",
             "default": "survival"
           },
           "display_name": {
@@ -88,16 +88,16 @@
           },
           "message": {
             "type": "object",
-            "description": "消息互通",
+            "description": "可选：QQ群消息互通",
             "items": {
               "sync_chat_mc_to_qq": {
                 "type": "bool",
-                "description": "MC→QQ聊天同步",
+                "description": "MC→已绑定QQ群聊天同步",
                 "default": false
               },
               "sync_chat_qq_to_mc": {
                 "type": "bool",
-                "description": "QQ→MC聊天同步",
+                "description": "已绑定QQ群→MC聊天同步",
                 "default": false
               },
               "forward_player_events": {

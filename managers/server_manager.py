@@ -168,7 +168,6 @@ class ServerRegistry:
         self,
         requested: str | None = None,
         selected: str | None = None,
-        bound_server_ids: Iterable[str] = (),
     ) -> tuple[str | None, str]:
         if requested:
             matched = self.match_id(requested)
@@ -179,12 +178,6 @@ class ServerRegistry:
         matched_selected = self.match_id(selected)
         if matched_selected:
             return matched_selected, ""
-
-        bound_ids = self.normalize_bound_ids(bound_server_ids)
-        if len(bound_ids) == 1:
-            return bound_ids[0], ""
-        if len(bound_ids) > 1:
-            return None, "❌ 当前群绑定了多个服务器，请先使用 mc use <服务器ID> 选择"
 
         if self.default_server_id:
             return self.default_server_id, ""

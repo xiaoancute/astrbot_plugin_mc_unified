@@ -22,7 +22,7 @@ from .utils.message_utils import MessageUtils
     "mc_unified",
     "AstrBot Community",
     "统一的Minecraft管理插件，支持RCON、WebSocket、MCSManager等多种管理方式，集成LLM自然语言管理和QQ↔MC消息互通",
-    "1.1.0",
+    "1.2.0",
     "https://github.com/xiaoancute/astrbot_plugin_mc_unified",
 )
 class MCUnifiedPlugin(Star):
@@ -279,11 +279,9 @@ class MCUnifiedPlugin(Star):
         self, event: AstrMessageEvent, requested: str = ""
     ) -> tuple[str | None, str]:
         user_id = str(event.get_sender_id() or "")
-        group_id = event.get_group_id()
         return self.server_registry.resolve_id(
             requested=requested,
             selected=self._selected_servers.get(user_id),
-            bound_server_ids=self._get_group_server_ids(group_id),
         )
 
     def _get_mc_tools(
@@ -309,7 +307,7 @@ class MCUnifiedPlugin(Star):
             if profile.server_id == selected_id:
                 flags.append("当前")
             if profile.server_id in bound_ids:
-                flags.append("本群已绑定")
+                flags.append("本群聊天已绑定")
             transports = []
             if profile.rcon_backend:
                 transports.append("RCON")
@@ -321,6 +319,73 @@ class MCUnifiedPlugin(Star):
                 f"({'+'.join(transports) or '未配置连接'}){suffix}"
             )
         return "\n".join(lines)
+
+    async def _server_status_line(self, server_id: str) -> str:
+        profile = self.server_registry.get(server_id)
+        if not profile:
+            return f"❌ {server_id}: 配置不存在"
+
+        states = []
+        if profile.rcon_backend:
+            success, message = await profile.rcon_backend.execute_command_checked(
+                "list"
+            )
+            states.append(f"RCON{'正常' if success else '失败'}")
+            if not success:
+                states.append(message)
+        else:
+            states.append("RCON未启用")
+
+        if profile.websocket_backend:
+            connected = await profile.websocket_backend.is_connected()
+            states.append(f"WebSocket{'已连接' if connected else '未连接'}")
+        else:
+            states.append("WebSocket未启用")
+
+        healthy = any("正常" in state or "已连接" in state for state in states)
+        return (
+            f"{'✅' if healthy else 'ℹ️'} {profile.label} ({server_id}): "
+            + "；".join(states)
+        )
+
+    async def _format_server_status(self, requested: str = "all") -> str:
+        if requested.casefold() == "all":
+            server_ids = [profile.server_id for profile in self.server_registry.all()]
+        else:
+            server_id = self.server_registry.match_id(requested)
+            if not server_id:
+                return f"❌ 找不到服务器: {requested}"
+            server_ids = [server_id]
+
+        if not server_ids:
+            return "❌ 尚未配置服务器"
+        lines = await asyncio.gather(
+            *(self._server_status_line(server_id) for server_id in server_ids)
+        )
+        return "🩺 服务器连接状态:\n" + "\n".join(lines)
+
+    async def _list_players_for_servers(
+        self, event: AstrMessageEvent, requested: str = ""
+    ) -> str:
+        if requested.casefold() != "all":
+            mc_tools, error, server_id = self._get_mc_tools(event, requested)
+            if not mc_tools:
+                return error
+            profile = self.server_registry.get(server_id)
+            return f"👥 {profile.label} ({server_id}):\n{await mc_tools.list_players()}"
+
+        profiles = [
+            profile for profile in self.server_registry.all() if profile.mc_tools
+        ]
+        if not profiles:
+            return "❌ 没有服务器启用 RCON，无法查询在线玩家"
+        results = await asyncio.gather(
+            *(profile.mc_tools.list_players() for profile in profiles)
+        )
+        return "\n\n".join(
+            f"👥 {profile.label} ({profile.server_id}):\n{result}"
+            for profile, result in zip(profiles, results)
+        )
 
     def _check_permission(
         self, event: AstrMessageEvent, action: str = "unknown"
@@ -380,6 +445,24 @@ class MCUnifiedPlugin(Star):
             yield event.plain_result(error_msg)
             return
         yield event.plain_result(self._format_server_list(event))
+
+    @filter.command("mc status")
+    async def cmd_mc_status(self, event: AstrMessageEvent, server_name: str = "all"):
+        has_permission, error_msg = self._check_read_only(event, "mc_status")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+        yield event.plain_result(await self._format_server_status(server_name))
+
+    @filter.command("mc players")
+    async def cmd_mc_players(self, event: AstrMessageEvent, server_name: str = "all"):
+        has_permission, error_msg = self._check_read_only(event, "mc_players")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+        yield event.plain_result(
+            await self._list_players_for_servers(event, server_name)
+        )
 
     @filter.command("mc use")
     async def cmd_mc_use(self, event: AstrMessageEvent, server_name: str):
@@ -560,6 +643,20 @@ class MCUnifiedPlugin(Star):
             return error_msg
         return self._format_server_list(event)
 
+    @filter.llm_tool(name="minecraft_get_status")
+    async def tool_minecraft_get_status(
+        self, event: AstrMessageEvent, server_name: str = "all"
+    ) -> str:
+        """检查一台或全部 Minecraft 服务器的连接状态。
+
+        Args:
+            server_name(string): 服务器ID或显示名称；使用all检查全部服务器。
+        """
+        has_permission, error_msg = self._check_read_only(event, "minecraft_get_status")
+        if not has_permission:
+            return error_msg
+        return await self._format_server_status(server_name)
+
     @filter.llm_tool(name="minecraft_select_server")
     async def tool_minecraft_select_server(
         self, event: AstrMessageEvent, server_name: str
@@ -582,158 +679,201 @@ class MCUnifiedPlugin(Star):
         return f"✅ 已选择服务器: {profile.label} ({server_id})"
 
     @filter.llm_tool(name="list_players")
-    async def tool_list_players(self, event: AstrMessageEvent) -> str:
-        """查看 Minecraft 服务器当前在线玩家列表。"""
+    async def tool_list_players(
+        self, event: AstrMessageEvent, server_name: str = "all"
+    ) -> str:
+        """查看一台或全部 Minecraft 服务器的在线玩家。
+
+        Args:
+            server_name(string): 服务器ID或显示名称；默认all汇总全部服务器。
+        """
         has_permission, error_msg = self._check_read_only(event, "list_players")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
-        if not mc_tools:
-            return error
-        return await mc_tools.list_players()
+        return await self._list_players_for_servers(event, server_name)
 
     @filter.llm_tool(name="kick_player")
     async def tool_kick_player(
-        self, event: AstrMessageEvent, player: str, reason: str = "被管理员踢出"
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        reason: str = "被管理员踢出",
+        server_name: str = "",
     ) -> str:
         """踢出指定玩家。
 
         Args:
             player(string): 玩家名称。
             reason(string): 踢出原因。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "kick_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.kick_player(player, reason)
 
     @filter.llm_tool(name="ban_player")
     async def tool_ban_player(
-        self, event: AstrMessageEvent, player: str, reason: str = "违反服务器规则"
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        reason: str = "违反服务器规则",
+        server_name: str = "",
     ) -> str:
         """封禁指定玩家。
 
         Args:
             player(string): 玩家名称。
             reason(string): 封禁原因。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "ban_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.ban_player(player, reason)
 
     @filter.llm_tool(name="pardon_player")
-    async def tool_pardon_player(self, event: AstrMessageEvent, player: str) -> str:
+    async def tool_pardon_player(
+        self, event: AstrMessageEvent, player: str, server_name: str = ""
+    ) -> str:
         """解除玩家封禁。
 
         Args:
             player(string): 玩家名称。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "pardon_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.pardon_player(player)
 
     @filter.llm_tool(name="op_player")
-    async def tool_op_player(self, event: AstrMessageEvent, player: str) -> str:
+    async def tool_op_player(
+        self, event: AstrMessageEvent, player: str, server_name: str = ""
+    ) -> str:
         """授予玩家 OP 权限。
 
         Args:
             player(string): 玩家名称。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "op_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.op_player(player)
 
     @filter.llm_tool(name="deop_player")
-    async def tool_deop_player(self, event: AstrMessageEvent, player: str) -> str:
+    async def tool_deop_player(
+        self, event: AstrMessageEvent, player: str, server_name: str = ""
+    ) -> str:
         """移除玩家 OP 权限。
 
         Args:
             player(string): 玩家名称。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "deop_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.deop_player(player)
 
     @filter.llm_tool(name="whitelist_add")
-    async def tool_whitelist_add(self, event: AstrMessageEvent, player: str) -> str:
+    async def tool_whitelist_add(
+        self, event: AstrMessageEvent, player: str, server_name: str = ""
+    ) -> str:
         """将玩家加入服务器白名单。
 
         Args:
             player(string): 玩家名称。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "whitelist_add")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.whitelist_add(player)
 
     @filter.llm_tool(name="whitelist_remove")
-    async def tool_whitelist_remove(self, event: AstrMessageEvent, player: str) -> str:
+    async def tool_whitelist_remove(
+        self, event: AstrMessageEvent, player: str, server_name: str = ""
+    ) -> str:
         """将玩家移出服务器白名单。
 
         Args:
             player(string): 玩家名称。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "whitelist_remove")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.whitelist_remove(player)
 
     @filter.llm_tool(name="whitelist_list")
-    async def tool_whitelist_list(self, event: AstrMessageEvent) -> str:
-        """查看服务器白名单。"""
+    async def tool_whitelist_list(
+        self, event: AstrMessageEvent, server_name: str = ""
+    ) -> str:
+        """查看指定服务器白名单。
+
+        Args:
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
         has_permission, error_msg = self._check_read_only(event, "whitelist_list")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.whitelist_list()
 
     @filter.llm_tool(name="banlist")
     async def tool_banlist(
-        self, event: AstrMessageEvent, ban_type: str = "players"
+        self,
+        event: AstrMessageEvent,
+        ban_type: str = "players",
+        server_name: str = "",
     ) -> str:
         """查看玩家或 IP 封禁列表。
 
         Args:
             ban_type(string): 列表类型，使用 players 或 ips。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_read_only(event, "banlist")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.banlist(ban_type)
 
     @filter.llm_tool(name="give_item")
     async def tool_give_item(
-        self, event: AstrMessageEvent, player: str, item: str, count: int = 1
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        item: str,
+        count: int = 1,
+        server_name: str = "",
     ) -> str:
         """给予玩家物品。
 
@@ -741,145 +881,176 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称或目标选择器。
             item(string): 物品 ID，例如 minecraft:diamond。
             count(number): 给予数量。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "give_item")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.give_item(player, item, count)
 
     @filter.llm_tool(name="teleport_player")
     async def tool_teleport_player(
-        self, event: AstrMessageEvent, player: str, target: str
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        target: str,
+        server_name: str = "",
     ) -> str:
         """传送玩家到坐标或其他玩家。
 
         Args:
             player(string): 要传送的玩家名称。
             target(string): 目标玩家或坐标，例如 100 64 200。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "teleport_player")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.teleport_player(player, target)
 
     @filter.llm_tool(name="set_gamemode")
     async def tool_set_gamemode(
-        self, event: AstrMessageEvent, player: str, mode: str
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        mode: str,
+        server_name: str = "",
     ) -> str:
         """设置玩家游戏模式。
 
         Args:
             player(string): 玩家名称。
             mode(string): survival、creative、adventure 或 spectator。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "set_gamemode")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.set_gamemode(player, mode)
 
     @filter.llm_tool(name="say_message")
-    async def tool_say_message(self, event: AstrMessageEvent, message: str) -> str:
+    async def tool_say_message(
+        self, event: AstrMessageEvent, message: str, server_name: str = ""
+    ) -> str:
         """向服务器内所有玩家广播消息。
 
         Args:
             message(string): 广播内容。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "say_message")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.say_message(message)
 
     @filter.llm_tool(name="execute_command")
-    async def tool_execute_command(self, event: AstrMessageEvent, command: str) -> str:
+    async def tool_execute_command(
+        self, event: AstrMessageEvent, command: str, server_name: str = ""
+    ) -> str:
         """通过 RCON 执行自定义 Minecraft 命令。
 
         Args:
             command(string): 不带或带斜杠的服务器命令。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "execute_command")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.execute_command(command)
 
     @filter.llm_tool(name="set_weather")
     async def tool_set_weather(
-        self, event: AstrMessageEvent, weather_type: str, duration: int = None
+        self,
+        event: AstrMessageEvent,
+        weather_type: str,
+        duration: int = None,
+        server_name: str = "",
     ) -> str:
         """设置服务器天气。
 
         Args:
             weather_type(string): clear、rain 或 thunder。
             duration(number, optional): 持续秒数。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "set_weather")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.set_weather(weather_type, duration)
 
     @filter.llm_tool(name="set_time")
-    async def tool_set_time(self, event: AstrMessageEvent, time_value: str) -> str:
+    async def tool_set_time(
+        self, event: AstrMessageEvent, time_value: str, server_name: str = ""
+    ) -> str:
         """设置服务器时间。
 
         Args:
             time_value(string): day、night、noon、midnight 或刻数。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "set_time")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.set_time(time_value)
 
     @filter.llm_tool(name="set_difficulty")
     async def tool_set_difficulty(
-        self, event: AstrMessageEvent, difficulty: str
+        self, event: AstrMessageEvent, difficulty: str, server_name: str = ""
     ) -> str:
         """设置服务器难度。
 
         Args:
             difficulty(string): peaceful、easy、normal 或 hard。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "set_difficulty")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.set_difficulty(difficulty)
 
     @filter.llm_tool(name="set_gamerule")
     async def tool_set_gamerule(
-        self, event: AstrMessageEvent, rule: str, value: str
+        self,
+        event: AstrMessageEvent,
+        rule: str,
+        value: str,
+        server_name: str = "",
     ) -> str:
         """修改 Minecraft 游戏规则。
 
         Args:
             rule(string): 游戏规则名称，例如 keepInventory。
             value(string): 规则值。
+            server_name(string, optional): 目标服务器ID或显示名称。
         """
         has_permission, error_msg = self._check_permission(event, "set_gamerule")
         if not has_permission:
             return error_msg
-        mc_tools, error, _ = self._get_mc_tools(event)
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
         if not mc_tools:
             return error
         return await mc_tools.set_gamerule(rule, value)

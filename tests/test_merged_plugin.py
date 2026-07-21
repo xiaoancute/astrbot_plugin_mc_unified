@@ -1,3 +1,4 @@
+import ast
 import sys
 import tempfile
 import types
@@ -221,22 +222,24 @@ class ServerProfileTests(unittest.TestCase):
         self.assertTrue(profiles[1].websocket_enabled)
         self.assertTrue(profiles[1].sync_chat_qq_to_mc)
 
-    def test_registry_requires_selection_for_multi_bound_group(self):
+    def test_registry_uses_explicit_selected_then_default_order(self):
         registry = ServerRegistry("survival")
         registry.add(ServerProfile("survival", "生存服"))
         registry.add(ServerProfile("creative", "创造服"))
         registry.finalize_default()
 
-        server_id, error = registry.resolve_id(
-            bound_server_ids=["survival", "creative"]
-        )
-        self.assertIsNone(server_id)
-        self.assertIn("多个服务器", error)
+        server_id, error = registry.resolve_id()
+        self.assertEqual(server_id, "survival")
+        self.assertEqual(error, "")
+
+        server_id, error = registry.resolve_id(selected="creative")
+        self.assertEqual(server_id, "creative")
+        self.assertEqual(error, "")
 
         server_id, error = registry.resolve_id(
-            selected="creative", bound_server_ids=["survival", "creative"]
+            requested="survival", selected="creative"
         )
-        self.assertEqual(server_id, "creative")
+        self.assertEqual(server_id, "survival")
         self.assertEqual(error, "")
 
     def test_legacy_default_binding_maps_to_configured_default(self):
@@ -246,6 +249,36 @@ class ServerProfileTests(unittest.TestCase):
         registry.finalize_default()
 
         self.assertEqual(registry.normalize_bound_ids(["default"]), ["survival"])
+
+
+class ToolTargetingTests(unittest.TestCase):
+    def test_minecraft_management_tools_accept_explicit_server_name(self):
+        main_path = Path(__file__).resolve().parents[1] / "main.py"
+        module = ast.parse(main_path.read_text(encoding="utf-8"))
+        exempt = {
+            "tool_minecraft_get_servers",
+            "tool_minecraft_select_server",
+        }
+
+        missing = []
+        for node in module.body:
+            if not isinstance(node, ast.ClassDef) or node.name != "MCUnifiedPlugin":
+                continue
+            for function in node.body:
+                if not isinstance(function, ast.AsyncFunctionDef):
+                    continue
+                decorators = [ast.unparse(value) for value in function.decorator_list]
+                is_minecraft_tool = any(
+                    "filter.llm_tool" in value and "mcsmanager_" not in value
+                    for value in decorators
+                )
+                if not is_minecraft_tool or function.name in exempt:
+                    continue
+                argument_names = [argument.arg for argument in function.args.args]
+                if "server_name" not in argument_names:
+                    missing.append(function.name)
+
+        self.assertEqual(missing, [])
 
 
 class _FakePanel:

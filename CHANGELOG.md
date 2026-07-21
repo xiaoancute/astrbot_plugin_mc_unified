@@ -1,5 +1,18 @@
 # 更新日志
 
+## v1.2.0
+
+### 调整
+
+- 明确插件主线为统一管理多台Minecraft服务器，QQ群绑定仅用于可选消息互通
+- 管理目标不再受当前QQ群绑定影响，解析顺序改为显式参数、用户选择、默认服务器
+- 所有Minecraft管理LLM工具新增可选`server_name`参数，可直接指定操作目标
+
+### 新增
+
+- `mc status [服务器ID|all]`和`minecraft_get_status`汇总连接状态
+- `mc players [服务器ID|all]`及`list_players(server_name="all")`汇总在线玩家
+
 ## v1.1.0
 
 ### 新增
