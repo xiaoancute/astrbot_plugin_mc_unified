@@ -1,0 +1,124 @@
+{
+  "rcon_enabled": {
+    "type": "bool",
+    "description": "启用RCON",
+    "hint": "是否启用RCON协议管理MC服务器",
+    "default": false
+  },
+  "rcon_host": {
+    "type": "string",
+    "description": "RCON主机地址",
+    "hint": "Minecraft服务器的IP地址或域名",
+    "default": "localhost"
+  },
+  "rcon_port": {
+    "type": "int",
+    "description": "RCON端口",
+    "hint": "Minecraft服务器的RCON端口（默认25575）",
+    "default": 25575
+  },
+  "rcon_password": {
+    "type": "string",
+    "description": "RCON密码",
+    "hint": "Minecraft服务器的RCON密码",
+    "default": ""
+  },
+  "mcsmanager_enabled": {
+    "type": "bool",
+    "description": "启用MCSManager",
+    "hint": "是否启用MCSManager面板管理",
+    "default": false
+  },
+  "mcsmanager_panels": {
+    "type": "template_list",
+    "description": "MCSManager面板列表",
+    "hint": "添加多个MCSManager面板的配置信息",
+    "default": [],
+    "templates": {
+      "panel": {
+        "name": "MCSManager面板",
+        "display_item": "panel_name",
+        "items": {
+          "panel_name": {
+            "type": "string",
+            "description": "面板名称",
+            "hint": "面板的标识名称，用于区分不同面板",
+            "default": ""
+          },
+          "url": {
+            "type": "string",
+            "description": "面板地址",
+            "hint": "MCSManager Web面板地址（如http://localhost:23333）",
+            "default": ""
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API密钥",
+            "hint": "MCSManager面板的API密钥",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
+  "websocket_enabled": {
+    "type": "bool",
+    "description": "启用WebSocket",
+    "hint": "是否启用WebSocket连接（用于鹊桥模组或自定义适配器）",
+    "default": false
+  },
+  "websocket_url": {
+    "type": "string",
+    "description": "WebSocket地址",
+    "hint": "鹊桥模组或自定义适配器的WebSocket地址",
+    "default": "ws://127.0.0.1:8080/minecraft/ws"
+  },
+  "websocket_token": {
+    "type": "string",
+    "description": "WebSocket令牌",
+    "hint": "WebSocket连接的认证令牌",
+    "default": ""
+  },
+  "admin_ids": {
+    "type": "list",
+    "description": "管理员列表",
+    "hint": "允许使用管理功能的QQ号/MC账号列表。留空则所有写操作被禁用",
+    "default": []
+  },
+  "enable_dangerous_commands": {
+    "type": "bool",
+    "description": "启用危险命令",
+    "hint": "是否启用stop等危险命令。建议保持关闭",
+    "default": false
+  },
+  "enable_chat_response": {
+    "type": "bool",
+    "description": "启用聊天响应",
+    "hint": "是否将LLM的响应发送回MC聊天框",
+    "default": true
+  },
+  "sync_chat_mc_to_qq": {
+    "type": "bool",
+    "description": "MC→QQ聊天同步",
+    "hint": "是否将MC聊天消息同步到绑定的QQ群",
+    "default": false
+  },
+  "sync_chat_qq_to_mc": {
+    "type": "bool",
+    "description": "QQ→MC聊天同步",
+    "hint": "是否将QQ群消息同步到MC服务器",
+    "default": false
+  },
+  "mc_message_prefix": {
+    "type": "string",
+    "description": "MC消息前缀",
+    "hint": "MC消息在QQ群中的前缀标识",
+    "default": "[MC]"
+  },
+  "qq_message_prefix": {
+    "type": "string",
+    "description": "QQ消息前缀",
+    "hint": "QQ消息在MC中的前缀标识",
+    "default": "[QQ]"
+  }
+}
