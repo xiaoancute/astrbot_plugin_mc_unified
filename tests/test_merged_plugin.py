@@ -474,6 +474,10 @@ class ToolTargetingTests(unittest.TestCase):
             "tool_mcsmanager_get_instances",
             "tool_mcsmanager_log",
             "tool_mcsmanager_overview",
+            "tool_mcsmanager_list_files",
+        }
+        admin_read = {
+            "tool_mcsmanager_read_file",
         }
         llm_functions = {}
         for node in ast.walk(module):
@@ -484,6 +488,7 @@ class ToolTargetingTests(unittest.TestCase):
                 llm_functions[node.name] = node
 
         self.assertEqual(set(llm_functions) & read_only, read_only)
+        self.assertEqual(set(llm_functions) & admin_read, admin_read)
         for name, function in llm_functions.items():
             calls = {
                 ast.unparse(node.func)
@@ -493,7 +498,11 @@ class ToolTargetingTests(unittest.TestCase):
             expected = (
                 "self._check_read_only"
                 if name in read_only
-                else "self._check_llm_write_permission"
+                else (
+                    "self._check_permission"
+                    if name in admin_read
+                    else "self._check_llm_write_permission"
+                )
             )
             self.assertIn(expected, calls, name)
             self.assertNotIn("self._set_llm_permission_mode", calls, name)
@@ -576,6 +585,10 @@ class _FakePanel:
         self.stopped = []
         self.sent_commands = []
         self.dangerous_commands_enabled = False
+        self.file_list_calls = []
+        self.file_read_calls = []
+        self.file_entries = [{"name": "server.properties", "size": 12}]
+        self.file_content = "motd=hello"
 
     async def get_instances(self):
         return list(self.instances)
@@ -587,6 +600,21 @@ class _FakePanel:
     async def send_command_to_instance(self, daemon_id, instance_uuid, command):
         self.sent_commands.append((daemon_id, instance_uuid, command))
         return "ok"
+
+    async def list_files(
+        self, daemon_id, instance_uuid, target, page, page_size, file_name=""
+    ):
+        self.file_list_calls.append(
+            (daemon_id, instance_uuid, target, page, page_size, file_name)
+        )
+        return {
+            "status": 200,
+            "data": {"maxPage": 2, "data": list(self.file_entries)},
+        }
+
+    async def read_file(self, daemon_id, instance_uuid, target):
+        self.file_read_calls.append((daemon_id, instance_uuid, target))
+        return {"status": 200, "data": self.file_content}
 
 
 class _FakeMultiBackend:
@@ -660,6 +688,43 @@ class MCSManagerTargetTests(unittest.IsolatedAsyncioTestCase):
             primary.sent_commands,
             [("daemon-primary", "uuid-1", "say hello")],
         )
+
+    async def test_list_files_resolves_fresh_instance_and_rejects_traversal(self):
+        primary = _FakePanel("primary", [_instance("survival", "uuid-1", "primary")])
+        tools = MCSManagerTools(_FakeMultiBackend([primary]))
+
+        result = await tools.list_files(
+            "survival", "config", 2, 25, "primary", "server"
+        )
+
+        self.assertIn("server.properties", result)
+        self.assertEqual(
+            primary.file_list_calls,
+            [("daemon-primary", "uuid-1", "/config", 2, 25, "server")],
+        )
+        self.assertIn(
+            "..", await tools.list_files("survival", "../secret", panel_name="primary")
+        )
+        self.assertEqual(len(primary.file_list_calls), 1)
+
+    async def test_read_file_is_bounded_and_rejects_root(self):
+        primary = _FakePanel("primary", [_instance("survival", "uuid-1", "primary")])
+        primary.file_content = "x" * 20_000
+        tools = MCSManagerTools(_FakeMultiBackend([primary]))
+
+        result = await tools.read_file(
+            "survival", "/server.properties", "primary", 20_000
+        )
+
+        self.assertIn("x" * 12_000, result)
+        self.assertIn("内容已截断", result)
+        self.assertEqual(
+            primary.file_read_calls,
+            [("daemon-primary", "uuid-1", "/server.properties")],
+        )
+        root_result = await tools.read_file("survival", "/", "primary")
+        self.assertIn("不能读取根目录", root_result)
+        self.assertEqual(len(primary.file_read_calls), 1)
 
 
 class WebSocketTests(unittest.IsolatedAsyncioTestCase):

@@ -1436,3 +1436,67 @@ class MCUnifiedPlugin(Star):
             return "❌ MCSManager工具未初始化，请先启用MCSManager"
         selected_panel = self._get_selected_panel(event, panel_name)
         return await self.mcsmanager_tools.get_overview(selected_panel)
+
+    @filter.llm_tool(name="mcsmanager_list_files")
+    async def tool_mcsmanager_list_files(
+        self,
+        event: AstrMessageEvent,
+        identifier: str,
+        target: str = "",
+        page: int = 1,
+        page_size: int = 50,
+        panel_name: str = None,
+        file_name: str = "",
+    ) -> str:
+        """查看 MCSManager 实例目录中的文件和文件夹（只读）。
+
+        Args:
+            identifier(string): 实例名称、UUID 或列表序号。
+            target(string, optional): 目录路径，留空表示实例根目录。
+            page(number, optional): 页码，从 1 开始。
+            page_size(number, optional): 每页条目数，最多 100。
+            panel_name(string, optional): 实例所属面板。
+            file_name(string, optional): 按文件名过滤。
+        """
+        has_permission, error_msg = self._check_read_only(
+            event, "mcsmanager_list_files"
+        )
+        if not has_permission:
+            return error_msg
+        if not self.mcsmanager_tools:
+            return "❌ MCSManager工具未初始化，请先启用MCSManager"
+        selected_panel = self._get_selected_panel(event, panel_name)
+        return await self.mcsmanager_tools.list_files(
+            identifier, target, page, page_size, selected_panel, file_name
+        )
+
+    @filter.llm_tool(name="mcsmanager_read_file")
+    async def tool_mcsmanager_read_file(
+        self,
+        event: AstrMessageEvent,
+        identifier: str,
+        target: str,
+        max_chars: int = 12000,
+        panel_name: str = None,
+    ) -> str:
+        """读取 MCSManager 实例中的文本文件，不提供写入或删除能力。
+
+        Args:
+            identifier(string): 实例名称、UUID 或列表序号。
+            target(string): 文件路径，例如 /server.properties。
+            max_chars(number, optional): 最多返回字符数，硬上限为 12000。
+            panel_name(string, optional): 实例所属面板。
+        """
+        # File contents may expose server secrets, so require an administrator,
+        # while deliberately keeping this operation outside LLM FULL mode.
+        has_permission, error_msg = self._check_permission(
+            event, "mcsmanager_read_file"
+        )
+        if not has_permission:
+            return error_msg
+        if not self.mcsmanager_tools:
+            return "❌ MCSManager工具未初始化，请先启用MCSManager"
+        selected_panel = self._get_selected_panel(event, panel_name)
+        return await self.mcsmanager_tools.read_file(
+            identifier, target, selected_panel, max_chars
+        )

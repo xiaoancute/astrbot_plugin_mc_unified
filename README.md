@@ -246,6 +246,8 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 查看所有 MCSManager 面板
 查看主面板的实例列表
 启动备用面板上的生存服务器
+查看主面板生存服务器的根目录
+读取主面板生存服务器的 /server.properties
 ```
 
 面板选择按用户隔离，不会影响其他群或管理员。实例操作支持名称、UUID、列表序号，
@@ -289,12 +291,18 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 | `mcsmanager_get_panels` | 获取面板列表 | 只读 |
 | `mcsmanager_select_panel` | 选择后续查询/操作面板 | 只读 |
 | `mcsmanager_get_instances` | 获取实例列表 | 只读 |
+| `mcsmanager_list_files` | 查看实例目录 | 只读 |
+| `mcsmanager_read_file` | 读取实例文件内容（管理员） | 管理员，只读 |
 | `mcsmanager_start_instance` | 启动实例 | FULL + 管理员 |
 | `mcsmanager_stop_instance` | 停止实例 | FULL + 管理员 |
 | `mcsmanager_restart_instance` | 重启实例 | FULL + 管理员 |
 | `mcsmanager_send_command` | 发送命令 | FULL + 管理员 |
 | `mcsmanager_get_log` | 获取日志 | 只读 |
 | `mcsmanager_get_overview` | 获取概览 | 只读 |
+
+目录列表允许读取实例根目录并支持分页；文件读取会拒绝 `..` 路径穿越、根目录和
+NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 个字符。当前阶段不提供
+文件写入、删除、移动、复制、压缩、上传或下载。
 
 ## 🔧 配置示例
 

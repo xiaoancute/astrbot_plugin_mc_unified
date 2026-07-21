@@ -216,6 +216,48 @@ class MCSManagerBackend:
 
         return "\n".join(lines)
 
+    async def list_files(
+        self,
+        daemon_id: str,
+        instance_uuid: str,
+        target: str = "/",
+        page: int = 1,
+        page_size: int = 50,
+        file_name: str = "",
+    ) -> Dict[str, Any]:
+        """List one page of files for an instance."""
+        try:
+            page = max(1, int(page))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = max(1, int(page_size))
+        except (TypeError, ValueError):
+            page_size = 50
+
+        return await self._make_request(
+            "/files/list",
+            params={
+                "daemonId": daemon_id,
+                "uuid": instance_uuid,
+                "target": target or "/",
+                "page": page,
+                "page_size": page_size,
+                "file_name": file_name or "",
+            },
+        )
+
+    async def read_file(
+        self, daemon_id: str, instance_uuid: str, target: str
+    ) -> Dict[str, Any]:
+        """Read a file using MCSManager's file endpoint."""
+        return await self._make_request(
+            "/files",
+            method="PUT",
+            params={"daemonId": daemon_id, "uuid": instance_uuid},
+            data={"target": target},
+        )
+
     async def terminate(self):
         await self.http_client.aclose()
         logger.info(f"MCSManager [{self.name}] HTTP客户端已关闭")

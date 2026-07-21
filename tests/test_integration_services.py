@@ -131,6 +131,59 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "ok\n")
         self.assertEqual(len(requests), 2)
 
+    async def test_file_list_and_read_follow_documented_contract(self):
+        requests = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            self.assertEqual(request.url.params["apikey"], "test-key")
+            self.assertEqual(request.headers["X-Requested-With"], "XMLHttpRequest")
+            if request.url.path == "/api/files/list":
+                self.assertEqual(request.method, "GET")
+                self.assertEqual(request.url.params["daemonId"], "daemon-1")
+                self.assertEqual(request.url.params["uuid"], "instance-1")
+                self.assertEqual(request.url.params["target"], "/config")
+                self.assertEqual(request.url.params["page"], "2")
+                self.assertEqual(request.url.params["page_size"], "25")
+                self.assertEqual(request.url.params["file_name"], "server")
+                return httpx.Response(
+                    200,
+                    json={
+                        "status": 200,
+                        "data": {
+                            "maxPage": 3,
+                            "data": [{"name": "server.properties", "size": 10}],
+                        },
+                    },
+                )
+            if request.url.path == "/api/files":
+                self.assertEqual(request.method, "PUT")
+                self.assertEqual(request.url.params["daemonId"], "daemon-1")
+                self.assertEqual(request.url.params["uuid"], "instance-1")
+                self.assertEqual(
+                    json.loads(request.content), {"target": "/server.properties"}
+                )
+                return httpx.Response(200, json={"status": 200, "data": "motd=hello"})
+            return httpx.Response(404, json={"status": 404, "error": "not found"})
+
+        backend = MCSManagerBackend("primary", "http://mcsmanager.test", "test-key")
+        await backend.http_client.aclose()
+        backend.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            listing = await backend.list_files(
+                "daemon-1", "instance-1", "/config", 2, 25, "server"
+            )
+            content = await backend.read_file(
+                "daemon-1", "instance-1", "/server.properties"
+            )
+        finally:
+            await backend.terminate()
+
+        self.assertEqual(listing["data"]["maxPage"], 3)
+        self.assertEqual(content["data"], "motd=hello")
+        self.assertEqual(len(requests), 2)
+
 
 class WebSocketContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_callback_and_outbound_broadcast(self):
