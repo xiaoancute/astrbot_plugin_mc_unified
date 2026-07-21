@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.3.0
+
+### 安全
+
+- LLM 默认进入 `READONLY` 模式，所有 Minecraft 和 MCSManager 写操作必须同时满足 FULL 模式与管理员白名单
+- 新增 `/mc ai-mode status`、`/mc ai-mode full CONFIRM` 和 `/mc ai-mode readonly`
+- 自然语言工具只能查看权限或返回人工开启说明，模型无法自行提升权限
+- FULL 模式明确提示模型幻觉、误解和选错服务器风险由启用者承担
+
+### 规范与消息链路
+
+- 命令改为 AstrBot 官方命令组，移除已弃用的 `@register`
+- 使用标准插件数据目录，并兼容迁移旧版绑定数据
+- 主动群消息改用真实会话标识和公开 `MessageChain` API
+- 修复 LLM 回复文本提取，并新增按服务器关闭的 QQ 群 AI 回复转发选项
+
 ## v1.2.0
 
 ### 调整

@@ -1,11 +1,13 @@
 import asyncio
+import shutil
 from contextlib import suppress
 from functools import partial
-import os
+from pathlib import Path
 
-from astrbot.api.star import Context, Star, register
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api import AstrBotConfig, logger
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .backends.rcon_backend import RCONBackend
 from .backends.mcsmanager_backend import MCSManagerMultiBackend
@@ -18,13 +20,6 @@ from .managers.server_manager import ServerRegistry, build_server_profiles
 from .utils.message_utils import MessageUtils
 
 
-@register(
-    "mc_unified",
-    "AstrBot Community",
-    "统一的Minecraft管理插件，支持RCON、WebSocket、MCSManager等多种管理方式，集成LLM自然语言管理和QQ↔MC消息互通",
-    "1.2.0",
-    "https://github.com/xiaoancute/astrbot_plugin_mc_unified",
-)
 class MCUnifiedPlugin(Star):
     """统一的Minecraft管理插件"""
 
@@ -33,12 +28,11 @@ class MCUnifiedPlugin(Star):
         self.config = config
         self.context = context
 
-        # 持久化数据存储于 AstrBot 的 data 目录下，而非插件自身目录
-        astrbot_data_dir = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        self.data_dir = os.path.join(astrbot_data_dir, "mc_unified")
-        os.makedirs(self.data_dir, exist_ok=True)
+        data_root = Path(get_astrbot_data_path())
+        data_dir = data_root / "plugin_data" / "mc_unified"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_data(data_root / "mc_unified", data_dir)
+        self.data_dir = str(data_dir)
 
         self.server_registry = ServerRegistry(self.config.get("default_server", ""))
         self._selected_servers = {}
@@ -66,6 +60,22 @@ class MCUnifiedPlugin(Star):
             )
 
         logger.info("MC Unified插件已加载")
+
+    @staticmethod
+    def _migrate_legacy_data(legacy_dir: Path, data_dir: Path) -> None:
+        """Copy legacy state into the standard plugin data directory once."""
+        if legacy_dir == data_dir or not legacy_dir.is_dir():
+            return
+        for filename in ("bindings.json", "group_sessions.json"):
+            source = legacy_dir / filename
+            target = data_dir / filename
+            if not source.is_file() or target.exists():
+                continue
+            try:
+                shutil.copy2(source, target)
+                logger.info(f"已迁移旧版插件数据: {source} -> {target}")
+            except OSError as error:
+                logger.warning(f"迁移旧版插件数据失败 {source}: {error}")
 
     def _init_backends(self):
         for profile in build_server_profiles(self.config):
@@ -149,8 +159,11 @@ class MCUnifiedPlugin(Star):
 
     def _init_managers(self):
         admin_ids = self.config.get("admin_ids", [])
-        self.permission_manager = PermissionManager(admin_ids)
+        llm_mode = self.config.get("llm_permission_mode", "readonly")
+        self.permission_manager = PermissionManager(admin_ids, llm_mode)
         self.binding_manager = GroupBindingManager(self.data_dir)
+        if self.permission_manager.is_llm_full_access():
+            logger.warning(PermissionManager.FULL_WARNING)
 
     async def initialize(self):
         for profile in self.server_registry.all():
@@ -225,25 +238,30 @@ class MCUnifiedPlugin(Star):
             groups.extend(self.binding_manager.get_bound_groups("default"))
         return list(dict.fromkeys(groups))
 
-    async def _send_to_qq_group(self, group_id: str, message: str):
-        try:
-            from astrbot.core.star.star_tools import StarTools
-            from astrbot.core.message.components import Plain
-
-            message_chain = await StarTools.create_message(
-                type="GroupMessage",
-                self_id="astrbot_mc_plugin",
-                session_id=f"aiocqhttp_default:GroupMessage:{group_id}",
-                sender=None,
-                message=[Plain(message)],
-                message_str=message,
-                group_id=group_id,
+    def _remember_group_session(self, event: AstrMessageEvent) -> None:
+        group_id = event.get_group_id()
+        unified_msg_origin = getattr(event, "unified_msg_origin", "")
+        if group_id and unified_msg_origin:
+            self.binding_manager.remember_group_session(
+                str(group_id), str(unified_msg_origin)
             )
-            await self.context.send_message(
-                f"aiocqhttp_default:GroupMessage:{group_id}", message_chain
+
+    async def _send_to_qq_group(self, group_id: str, message: str) -> bool:
+        """Send proactively through AstrBot's public MessageChain API."""
+        unified_msg_origin = self.binding_manager.get_group_session(group_id)
+        if not unified_msg_origin:
+            logger.warning(
+                f"无法主动发送到群 {group_id}: 尚未记录真实会话，请先在群内发送一条消息"
+            )
+            return False
+        try:
+            message_chain = MessageChain().message(message)
+            return bool(
+                await self.context.send_message(unified_msg_origin, message_chain)
             )
         except Exception as e:
             logger.error(f"发送消息到QQ群失败: {e}")
+            return False
 
     async def _send_to_mc(self, server_id: str, message: str) -> str:
         profile = self.server_registry.get(server_id)
@@ -399,6 +417,42 @@ class MCUnifiedPlugin(Star):
         user_id = event.get_sender_id()
         return self.permission_manager.check_read_only(user_id, action)
 
+    def _check_llm_write_permission(
+        self, event: AstrMessageEvent, action: str
+    ) -> tuple[bool, str]:
+        user_id = event.get_sender_id()
+        return self.permission_manager.check_llm_write_permission(user_id, action)
+
+    def _format_llm_permission_status(self) -> str:
+        if self.permission_manager.is_llm_full_access():
+            return (
+                "⚠️ AI权限模式: FULL\n"
+                f"{PermissionManager.FULL_WARNING}\n"
+                "管理员可随时使用 /mc ai-mode readonly 恢复只读。"
+            )
+        return (
+            "🔒 AI权限模式: READONLY（默认）\n"
+            "LLM只能查询状态、玩家、日志和配置目标，不能执行任何写操作。\n"
+            "如确需开启，请由管理员使用 /mc ai-mode full CONFIRM。"
+        )
+
+    def _set_llm_permission_mode(self, mode: str) -> tuple[bool, str]:
+        normalized = self.permission_manager.normalize_llm_mode(mode)
+        previous = self.permission_manager.llm_permission_mode
+        previous_config = self.config.get("llm_permission_mode", previous)
+        self.permission_manager.set_llm_permission_mode(normalized)
+        self.config["llm_permission_mode"] = normalized
+        save_config = getattr(self.config, "save_config", None)
+        if callable(save_config):
+            try:
+                save_config()
+            except Exception as error:
+                self.permission_manager.set_llm_permission_mode(previous)
+                self.config["llm_permission_mode"] = previous_config
+                logger.error(f"保存AI权限模式失败: {error}")
+                return False, "❌ 权限模式保存失败，请检查AstrBot日志"
+        return True, normalized
+
     def _get_selected_panel(
         self, event: AstrMessageEvent, panel_name: str = None
     ) -> str | None:
@@ -408,21 +462,32 @@ class MCUnifiedPlugin(Star):
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response):
-        sender_id = event.get_sender_id()
-        if sender_id and sender_id.startswith("mc_player_"):
-            if self.config.get("enable_chat_response", True):
-                response_text = str(response) if response else ""
-                if response_text and response_text.strip() not in ["*No response*", ""]:
-                    server_id, _ = self._resolve_server_id(event)
-                    if server_id:
-                        await self._send_to_mc(server_id, response_text)
+        """Optionally forward a completed group LLM response to bound servers."""
+        if not response or getattr(response, "is_chunk", False):
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+        self._remember_group_session(event)
+
+        response_text = str(getattr(response, "completion_text", "") or "").strip()
+        if not response_text or response_text == "*No response*":
+            return
+
+        for server_id in self._get_group_server_ids(group_id):
+            profile = self.server_registry.get(server_id)
+            if profile and profile.forward_llm_responses_to_mc:
+                await self._send_to_mc(server_id, f"AI: {response_text}")
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_qq_group_message(self, event: AstrMessageEvent):
+        """Remember the real QQ session and optionally forward group chat to MC."""
         group_id = event.get_group_id()
         if not group_id:
             return
+        self._remember_group_session(event)
 
         server_ids = self._get_group_server_ids(group_id)
         if not server_ids:
@@ -438,24 +503,32 @@ class MCUnifiedPlugin(Star):
             if profile and profile.sync_chat_qq_to_mc:
                 await self._send_to_mc(server_id, f"{sender_name}: {message_text}")
 
-    @filter.command("mc servers")
+    @filter.command_group("mc")
+    def mc(self):
+        """Minecraft统一管理命令。"""
+        pass
+
+    @mc.command("servers")
     async def cmd_mc_servers(self, event: AstrMessageEvent):
+        """查看全部Minecraft服务器及当前选择。"""
         has_permission, error_msg = self._check_read_only(event, "mc_servers")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
         yield event.plain_result(self._format_server_list(event))
 
-    @filter.command("mc status")
+    @mc.command("status")
     async def cmd_mc_status(self, event: AstrMessageEvent, server_name: str = "all"):
+        """检查一台或全部服务器连接状态。"""
         has_permission, error_msg = self._check_read_only(event, "mc_status")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
         yield event.plain_result(await self._format_server_status(server_name))
 
-    @filter.command("mc players")
+    @mc.command("players")
     async def cmd_mc_players(self, event: AstrMessageEvent, server_name: str = "all"):
+        """查看一台或全部服务器在线玩家。"""
         has_permission, error_msg = self._check_read_only(event, "mc_players")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -464,8 +537,9 @@ class MCUnifiedPlugin(Star):
             await self._list_players_for_servers(event, server_name)
         )
 
-    @filter.command("mc use")
+    @mc.command("use")
     async def cmd_mc_use(self, event: AstrMessageEvent, server_name: str):
+        """选择当前管理员后续操作的默认服务器。"""
         has_permission, error_msg = self._check_permission(event, "mc_use")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -482,8 +556,9 @@ class MCUnifiedPlugin(Star):
             f"✅ 当前管理服务器已切换为 {profile.label} ({server_id})"
         )
 
-    @filter.command("mc bindings")
+    @mc.command("bindings")
     async def cmd_mc_bindings(self, event: AstrMessageEvent):
+        """查看当前QQ群的消息转发绑定。"""
         has_permission, error_msg = self._check_read_only(event, "mc_bindings")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -505,8 +580,9 @@ class MCUnifiedPlugin(Star):
         ]
         yield event.plain_result("🔗 当前群已绑定:\n- " + "\n- ".join(labels))
 
-    @filter.command("mc bind")
+    @mc.command("bind")
     async def cmd_mc_bind(self, event: AstrMessageEvent, server_name: str = ""):
+        """将当前QQ群绑定到指定服务器的消息转发。"""
         has_permission, error_msg = self._check_permission(event, "mc_bind")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -516,6 +592,7 @@ class MCUnifiedPlugin(Star):
         if not group_id:
             yield event.plain_result("❌ 请在QQ群中使用此命令")
             return
+        self._remember_group_session(event)
 
         server_id, resolve_error = self._resolve_server_id(event, server_name)
         if not server_id:
@@ -533,8 +610,9 @@ class MCUnifiedPlugin(Star):
         else:
             yield event.plain_result(f"⚠️ 当前群已绑定 {profile.label}")
 
-    @filter.command("mc unbind")
+    @mc.command("unbind")
     async def cmd_mc_unbind(self, event: AstrMessageEvent, server_name: str = ""):
+        """解除当前QQ群的指定或全部消息转发绑定。"""
         has_permission, error_msg = self._check_permission(event, "mc_unbind")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -577,8 +655,9 @@ class MCUnifiedPlugin(Star):
         else:
             yield event.plain_result(f"⚠️ 当前群未绑定{target_label}")
 
-    @filter.command("mc test")
+    @mc.command("test")
     async def cmd_mc_test(self, event: AstrMessageEvent, server_name: str = ""):
+        """测试指定Minecraft服务器的RCON连接。"""
         has_permission, error_msg = self._check_permission(event, "mc_test")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -596,8 +675,9 @@ class MCUnifiedPlugin(Star):
         else:
             yield event.plain_result(f"❌ {profile.label} RCON连接失败\n{message}")
 
-    @filter.command("mc log")
+    @mc.command("log")
     async def cmd_mc_log(self, event: AstrMessageEvent):
+        """查看最近的权限与管理操作日志。"""
         has_permission, error_msg = self._check_permission(event, "mc_log")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -606,8 +686,9 @@ class MCUnifiedPlugin(Star):
         log = self.permission_manager.get_action_log()
         yield event.plain_result(log)
 
-    @filter.command("mc security")
+    @mc.command("security")
     async def cmd_mc_security(self, event: AstrMessageEvent):
+        """查看管理员、危险命令和AI权限安全状态。"""
         has_permission, error_msg = self._check_permission(event, "mc_security")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -621,11 +702,72 @@ class MCUnifiedPlugin(Star):
         result += f"  安全模式: {'✅ 已启用' if security_enabled else '❌ 未启用'}\n"
         result += f"  管理员数量: {admin_count}\n"
         result += f"  管理员列表: {admins if admins else '无'}\n"
+        result += (
+            "  AI权限: "
+            f"{'⚠️ FULL' if self.permission_manager.is_llm_full_access() else '🔒 READONLY'}\n"
+        )
 
         if not security_enabled:
             result += "\n⚠️ 警告：管理员列表为空，所有写操作已禁用！"
+        elif self.permission_manager.is_llm_full_access():
+            result += f"\n{PermissionManager.FULL_WARNING}"
 
         yield event.plain_result(result)
+
+    @mc.command("ai-mode")
+    async def cmd_mc_ai_mode(
+        self,
+        event: AstrMessageEvent,
+        mode: str = "status",
+        confirmation: str = "",
+    ):
+        """查看或切换AI的READONLY/FULL权限模式。"""
+        has_permission, error_msg = self._check_permission(event, "mc_ai_mode")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+
+        requested = str(mode or "status").strip().casefold()
+        if requested in {"status", "show", "查看", "状态"}:
+            yield event.plain_result(self._format_llm_permission_status())
+            return
+
+        if requested in {"readonly", "read-only", "read_only", "只读"}:
+            success, result = self._set_llm_permission_mode("readonly")
+            yield event.plain_result(
+                "✅ AI权限已恢复为READONLY，所有LLM写操作立即禁用。"
+                if success
+                else result
+            )
+            return
+
+        if requested != "full":
+            yield event.plain_result(
+                "❌ 可用模式: readonly、full。查看状态: /mc ai-mode status"
+            )
+            return
+
+        if confirmation != PermissionManager.FULL_CONFIRMATION:
+            yield event.plain_result(
+                f"{PermissionManager.FULL_WARNING}\n\n"
+                "如确认启用，请由管理员完整输入：\n"
+                "/mc ai-mode full CONFIRM\n"
+                "未提供精确确认词时不会修改权限。"
+            )
+            return
+
+        success, result = self._set_llm_permission_mode("full")
+        if not success:
+            yield event.plain_result(result)
+            return
+        logger.warning(
+            f"管理员 {event.get_sender_id()} 已启用LLM FULL权限；用户已确认自行承担风险"
+        )
+        yield event.plain_result(
+            "⚠️ AI权限已切换为FULL。\n"
+            f"{PermissionManager.FULL_WARNING}\n"
+            "建议完成操作后立即执行 /mc ai-mode readonly。"
+        )
 
     async def _test_rcon_connection(self, server_id: str) -> tuple[bool, str]:
         profile = self.server_registry.get(server_id)
@@ -657,6 +799,30 @@ class MCUnifiedPlugin(Star):
             return error_msg
         return await self._format_server_status(server_name)
 
+    @filter.llm_tool(name="minecraft_get_ai_permission")
+    async def tool_minecraft_get_ai_permission(self, event: AstrMessageEvent) -> str:
+        """查看当前AI管理权限模式和安全提示。"""
+        has_permission, error_msg = self._check_read_only(
+            event, "minecraft_get_ai_permission"
+        )
+        if not has_permission:
+            return error_msg
+        return self._format_llm_permission_status()
+
+    @filter.llm_tool(name="minecraft_request_full_access")
+    async def tool_minecraft_request_full_access(self, event: AstrMessageEvent) -> str:
+        """获取开启AI FULL权限的人工确认说明；此工具不会修改权限。"""
+        has_permission, error_msg = self._check_read_only(
+            event, "minecraft_request_full_access"
+        )
+        if not has_permission:
+            return error_msg
+        return (
+            f"{PermissionManager.FULL_WARNING}\n"
+            "为防止模型幻觉或自行提权，必须由管理员手动输入 "
+            "/mc ai-mode full CONFIRM；本工具不会开启权限。"
+        )
+
     @filter.llm_tool(name="minecraft_select_server")
     async def tool_minecraft_select_server(
         self, event: AstrMessageEvent, server_name: str
@@ -666,7 +832,7 @@ class MCUnifiedPlugin(Star):
         Args:
             server_name(string): 配置中的服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_read_only(
             event, "minecraft_select_server"
         )
         if not has_permission:
@@ -707,7 +873,9 @@ class MCUnifiedPlugin(Star):
             reason(string): 踢出原因。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "kick_player")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "kick_player"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -730,7 +898,9 @@ class MCUnifiedPlugin(Star):
             reason(string): 封禁原因。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "ban_player")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "ban_player"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -748,7 +918,9 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "pardon_player")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "pardon_player"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -766,7 +938,7 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "op_player")
+        has_permission, error_msg = self._check_llm_write_permission(event, "op_player")
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -784,7 +956,9 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "deop_player")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "deop_player"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -802,7 +976,9 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "whitelist_add")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "whitelist_add"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -820,7 +996,9 @@ class MCUnifiedPlugin(Star):
             player(string): 玩家名称。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "whitelist_remove")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "whitelist_remove"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -883,7 +1061,7 @@ class MCUnifiedPlugin(Star):
             count(number): 给予数量。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "give_item")
+        has_permission, error_msg = self._check_llm_write_permission(event, "give_item")
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -906,7 +1084,9 @@ class MCUnifiedPlugin(Star):
             target(string): 目标玩家或坐标，例如 100 64 200。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "teleport_player")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "teleport_player"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -929,7 +1109,9 @@ class MCUnifiedPlugin(Star):
             mode(string): survival、creative、adventure 或 spectator。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "set_gamemode")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "set_gamemode"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -947,7 +1129,9 @@ class MCUnifiedPlugin(Star):
             message(string): 广播内容。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "say_message")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "say_message"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -965,7 +1149,9 @@ class MCUnifiedPlugin(Star):
             command(string): 不带或带斜杠的服务器命令。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "execute_command")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "execute_command"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -988,7 +1174,9 @@ class MCUnifiedPlugin(Star):
             duration(number, optional): 持续秒数。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "set_weather")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "set_weather"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -1006,7 +1194,7 @@ class MCUnifiedPlugin(Star):
             time_value(string): day、night、noon、midnight 或刻数。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "set_time")
+        has_permission, error_msg = self._check_llm_write_permission(event, "set_time")
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -1024,7 +1212,9 @@ class MCUnifiedPlugin(Star):
             difficulty(string): peaceful、easy、normal 或 hard。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "set_difficulty")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "set_difficulty"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -1047,7 +1237,9 @@ class MCUnifiedPlugin(Star):
             value(string): 规则值。
             server_name(string, optional): 目标服务器ID或显示名称。
         """
-        has_permission, error_msg = self._check_permission(event, "set_gamerule")
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "set_gamerule"
+        )
         if not has_permission:
             return error_msg
         mc_tools, error, _ = self._get_mc_tools(event, server_name)
@@ -1076,7 +1268,7 @@ class MCUnifiedPlugin(Star):
         Args:
             panel_name(string): 配置中的面板名称。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_read_only(
             event, "mcsmanager_select_panel"
         )
         if not has_permission:
@@ -1118,7 +1310,7 @@ class MCUnifiedPlugin(Star):
             identifier(string): 实例名称、UUID 或列表序号。
             panel_name(string, optional): 实例所属面板。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_llm_write_permission(
             event, "mcsmanager_start_instance"
         )
         if not has_permission:
@@ -1138,7 +1330,7 @@ class MCUnifiedPlugin(Star):
             identifier(string): 实例名称、UUID 或列表序号。
             panel_name(string, optional): 实例所属面板。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_llm_write_permission(
             event, "mcsmanager_stop_instance"
         )
         if not has_permission:
@@ -1158,7 +1350,7 @@ class MCUnifiedPlugin(Star):
             identifier(string): 实例名称、UUID 或列表序号。
             panel_name(string, optional): 实例所属面板。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_llm_write_permission(
             event, "mcsmanager_restart_instance"
         )
         if not has_permission:
@@ -1183,7 +1375,7 @@ class MCUnifiedPlugin(Star):
             command(string): 要发送的控制台命令。
             panel_name(string, optional): 实例所属面板。
         """
-        has_permission, error_msg = self._check_permission(
+        has_permission, error_msg = self._check_llm_write_permission(
             event, "mcsmanager_send_command"
         )
         if not has_permission:
@@ -1210,7 +1402,7 @@ class MCUnifiedPlugin(Star):
             size(number): 最多返回的日志行数。
             panel_name(string, optional): 实例所属面板。
         """
-        has_permission, error_msg = self._check_permission(event, "mcsmanager_get_log")
+        has_permission, error_msg = self._check_read_only(event, "mcsmanager_get_log")
         if not has_permission:
             return error_msg
         if not self.mcsmanager_tools:

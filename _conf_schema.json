@@ -1,4 +1,12 @@
 {
+  "llm_permission_mode": {
+    "type": "string",
+    "description": "AI管理权限模式",
+    "hint": "默认readonly：LLM只能查询。full允许LLM踢人、封禁、OP、执行命令、修改世界和启停实例；模型可能产生幻觉或选错目标，启用后风险与后果由用户自行承担。建议通过 /mc ai-mode 管理并在操作后立即恢复readonly",
+    "obvious_hint": true,
+    "options": ["readonly", "full"],
+    "default": "readonly"
+  },
   "default_server": {
     "type": "string",
     "description": "默认服务器ID",
@@ -98,6 +106,12 @@
               "sync_chat_qq_to_mc": {
                 "type": "bool",
                 "description": "已绑定QQ群→MC聊天同步",
+                "default": false
+              },
+              "forward_llm_responses_to_mc": {
+                "type": "bool",
+                "description": "AstrBot的LLM回复→MC",
+                "hint": "将绑定QQ群中的AI最终回复转发到此服务器，可能产生较多消息，默认关闭",
                 "default": false
               },
               "forward_player_events": {
@@ -230,9 +244,9 @@
   },
   "enable_chat_response": {
     "type": "bool",
-    "description": "启用聊天响应",
-    "hint": "是否将LLM的响应发送回MC聊天框",
-    "default": true
+    "description": "旧版单服：LLM回复→MC",
+    "hint": "将绑定QQ群中的AI最终回复转发到旧版单服，可能产生较多消息，默认关闭",
+    "default": false
   },
   "sync_chat_mc_to_qq": {
     "type": "bool",

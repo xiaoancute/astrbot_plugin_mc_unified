@@ -11,9 +11,10 @@
 - 群绑定不是管理前置条件，只用于可选的QQ↔MC消息转发
 
 ### 🤖 LLM 自然语言管理
-- 无需命令前缀，直接与 LLM 对话即可管理服务器
-- 支持玩家管理、游戏操作、服务器管理、世界操作等功能
-- 权限控制：支持管理员白名单
+- 默认 `READONLY`：自然语言只能查询服务器、玩家、日志和目标信息
+- 写操作必须同时满足全局 `FULL` 模式和请求者位于 `admin_ids`
+- 模型只能说明如何申请 FULL，不能通过工具或自然语言自行提权
+- 支持玩家、世界、服务器及 MCSManager 操作，并保留速率限制和审计日志
 
 ### 🔄 QQ ↔ MC 消息互通
 - MC 聊天消息同步到绑定的 QQ 群
@@ -33,7 +34,8 @@
 
 ### 🔒 安全特性
 - **强制权限控制**：管理员列表为空时，所有写操作自动禁用
-- **分级权限**：只读操作（查看玩家列表、白名单等）和写操作（踢人、封禁等）分开控制
+- **最小权限默认值**：LLM 默认只能读取，写操作需要管理员明确开启 FULL
+- **防止模型自行提权**：自然语言工具只能返回状态和人工确认指令
 - **速率限制**：每分钟最多 10 次操作，防止滥用
 - **操作日志**：记录权限判定和操作请求，方便审计
 
@@ -89,6 +91,7 @@
       "message": {
         "sync_chat_mc_to_qq": true,
         "sync_chat_qq_to_mc": true,
+        "forward_llm_responses_to_mc": false,
         "forward_player_events": true,
         "transport": "auto",
         "mc_message_prefix": "[MC:{server}]",
@@ -127,6 +130,10 @@
 - MC→QQ：服务器聊天发送到绑定了该服务器的群
 - QQ→MC：群消息发送到该群绑定且开启同步的服务器
 - 一个群可以绑定多台服务器，但可能产生较多消息，建议按需开启同步开关
+- `forward_llm_responses_to_mc` 决定是否把该群中的最终 AI 回复发回对应服务器，默认关闭
+
+升级后，旧绑定群需要先发送一条新群消息，或重新执行一次 `/mc bind`，插件才能记录
+AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造会话地址。
 
 ### MCSManager 配置
 
@@ -180,6 +187,7 @@
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `admin_ids` | 管理员列表（QQ号或 MC 玩家名）。**留空则所有写操作禁用** | `[]` |
+| `llm_permission_mode` | AI 权限模式：`readonly` 或 `full`。建议仅临时开启 FULL | `readonly` |
 | `enable_dangerous_commands` | 启用危险命令（如 stop） | `false` |
 
 ## 📖 使用方法
@@ -187,35 +195,42 @@
 ### 多服务器管理
 
 ```
-mc servers      - 查看全部服务器及连接方式
-mc status all   - 检查全部服务器连接状态
-mc players all  - 汇总全部服务器在线玩家
-mc use server-2 - 设置当前管理员的默认操作目标
-mc test server-2 - 测试指定服务器的RCON连接
-mc log       - 查看操作日志（最近20条）
-mc security  - 查看当前安全状态
+/mc servers       - 查看全部服务器及连接方式
+/mc status all    - 检查全部服务器连接状态
+/mc players all   - 汇总全部服务器在线玩家
+/mc use server-2  - 设置当前管理员的默认操作目标
+/mc test server-2 - 测试指定服务器的RCON连接
+/mc log           - 查看操作日志（最近20条）
+/mc security      - 查看当前安全状态
+/mc ai-mode status       - 查看AI权限
+/mc ai-mode full CONFIRM - 明确确认并开启FULL
+/mc ai-mode readonly     - 立即恢复只读
 ```
 
 消息互通需要时再使用：
 
 ```text
-mc bind server-1    - 当前群接收/发送server-1消息
-mc bindings         - 查看当前群的聊天转发绑定
-mc unbind server-1  - 解除指定聊天绑定
-mc unbind all       - 解除当前群全部聊天绑定
+/mc bind server-1    - 当前群接收/发送server-1消息
+/mc bindings         - 查看当前群的聊天转发绑定
+/mc unbind server-1  - 解除指定聊天绑定
+/mc unbind all       - 解除当前群全部聊天绑定
 ```
 
 ### LLM 自然语言交互
 
-直接与 LLM 对话即可管理服务器：
+默认只能直接询问只读信息，例如：
 
 ```
 查看在线玩家
 查看全部服务器状态和在线玩家
-把server-2的Steve踢出，原因是挂机太久
-给生存服的Alex 64个钻石
-把creative的时间调成白天
 ```
+
+写操作会在 `READONLY` 下被拒绝。管理员必须亲自输入
+`/mc ai-mode full CONFIRM` 才能临时启用；询问“开启完整权限”只会得到说明，模型不会
+自行修改模式。完成操作后应立即执行 `/mc ai-mode readonly`。
+
+> ⚠️ FULL 模式允许模型执行踢人、封禁、OP、任意命令、世界修改和实例启停。
+> 模型可能产生幻觉、误解意图或选错服务器；启用后的风险与后果由用户自行承担。
 
 ### MCSManager 面板管理
 
@@ -234,47 +249,50 @@ mc unbind all       - 解除当前群全部聊天绑定
 
 | 工具名 | 功能 | 权限 |
 |--------|------|------|
-| `minecraft_get_servers` | 查看服务器清单、默认和当前选择 | 无需权限 |
-| `minecraft_get_status` | 检查一台或全部服务器连接状态 | 无需权限 |
-| `minecraft_select_server` | 选择后续管理操作的服务器 | 管理员 |
-| `list_players` | 查看一台或全部服务器在线玩家 | 无需权限 |
-| `kick_player` | 踢出玩家 | 管理员 |
-| `ban_player` | 封禁玩家 | 管理员 |
-| `pardon_player` | 解封玩家 | 管理员 |
-| `op_player` | 授予 OP 权限 | 管理员 |
-| `deop_player` | 移除 OP 权限 | 管理员 |
-| `whitelist_add` | 添加白名单 | 管理员 |
-| `whitelist_remove` | 移除白名单 | 管理员 |
-| `whitelist_list` | 查看白名单 | 无需权限 |
-| `banlist` | 查看封禁列表 | 无需权限 |
-| `give_item` | 给予物品 | 管理员 |
-| `teleport_player` | 传送玩家 | 管理员 |
-| `set_gamemode` | 设置游戏模式 | 管理员 |
-| `say_message` | 服务器广播 | 管理员 |
-| `execute_command` | 执行自定义命令 | 管理员 |
-| `set_weather` | 设置天气 | 管理员 |
-| `set_time` | 设置时间 | 管理员 |
-| `set_difficulty` | 设置难度 | 管理员 |
-| `set_gamerule` | 设置游戏规则 | 管理员 |
+| `minecraft_get_servers` | 查看服务器清单、默认和当前选择 | 只读 |
+| `minecraft_get_status` | 检查一台或全部服务器连接状态 | 只读 |
+| `minecraft_get_ai_permission` | 查看AI权限模式 | 只读 |
+| `minecraft_request_full_access` | 返回人工开启说明，不修改权限 | 只读 |
+| `minecraft_select_server` | 选择后续管理操作的服务器 | 只读 |
+| `list_players` | 查看一台或全部服务器在线玩家 | 只读 |
+| `kick_player` | 踢出玩家 | FULL + 管理员 |
+| `ban_player` | 封禁玩家 | FULL + 管理员 |
+| `pardon_player` | 解封玩家 | FULL + 管理员 |
+| `op_player` | 授予 OP 权限 | FULL + 管理员 |
+| `deop_player` | 移除 OP 权限 | FULL + 管理员 |
+| `whitelist_add` | 添加白名单 | FULL + 管理员 |
+| `whitelist_remove` | 移除白名单 | FULL + 管理员 |
+| `whitelist_list` | 查看白名单 | 只读 |
+| `banlist` | 查看封禁列表 | 只读 |
+| `give_item` | 给予物品 | FULL + 管理员 |
+| `teleport_player` | 传送玩家 | FULL + 管理员 |
+| `set_gamemode` | 设置游戏模式 | FULL + 管理员 |
+| `say_message` | 服务器广播 | FULL + 管理员 |
+| `execute_command` | 执行自定义命令 | FULL + 管理员 |
+| `set_weather` | 设置天气 | FULL + 管理员 |
+| `set_time` | 设置时间 | FULL + 管理员 |
+| `set_difficulty` | 设置难度 | FULL + 管理员 |
+| `set_gamerule` | 设置游戏规则 | FULL + 管理员 |
 
 ### MCSManager 面板管理
 
 | 工具名 | 功能 | 权限 |
 |--------|------|------|
-| `mcsmanager_get_panels` | 获取面板列表 | 无需权限 |
-| `mcsmanager_select_panel` | 切换当前面板 | 管理员 |
-| `mcsmanager_get_instances` | 获取实例列表 | 无需权限 |
-| `mcsmanager_start_instance` | 启动实例 | 管理员 |
-| `mcsmanager_stop_instance` | 停止实例 | 管理员 |
-| `mcsmanager_restart_instance` | 重启实例 | 管理员 |
-| `mcsmanager_send_command` | 发送命令 | 管理员 |
-| `mcsmanager_get_log` | 获取日志 | 管理员 |
-| `mcsmanager_get_overview` | 获取概览 | 无需权限 |
+| `mcsmanager_get_panels` | 获取面板列表 | 只读 |
+| `mcsmanager_select_panel` | 选择后续查询/操作面板 | 只读 |
+| `mcsmanager_get_instances` | 获取实例列表 | 只读 |
+| `mcsmanager_start_instance` | 启动实例 | FULL + 管理员 |
+| `mcsmanager_stop_instance` | 停止实例 | FULL + 管理员 |
+| `mcsmanager_restart_instance` | 重启实例 | FULL + 管理员 |
+| `mcsmanager_send_command` | 发送命令 | FULL + 管理员 |
+| `mcsmanager_get_log` | 获取日志 | 只读 |
+| `mcsmanager_get_overview` | 获取概览 | 只读 |
 
 ## 🔧 配置示例
 
 ```json
 {
+  "llm_permission_mode": "readonly",
   "default_server": "survival",
   "mc_servers": [
     {
@@ -289,7 +307,8 @@ mc unbind all       - 解除当前群全部聊天绑定
       },
       "message": {
         "sync_chat_mc_to_qq": true,
-        "sync_chat_qq_to_mc": true
+        "sync_chat_qq_to_mc": true,
+        "forward_llm_responses_to_mc": false
       }
     }
   ],
@@ -309,11 +328,11 @@ mc unbind all       - 解除当前群全部聊天绑定
 
 ## 🔐 安全建议
 
-1. 设置强密码：RCON 和 MCSManager API 密码应使用强密码
-2. 限制管理员：在 `admin_ids` 中明确指定可以使用的用户
-3. 生产环境必须配置管理员列表：不要留空 `admin_ids`
-4. 禁用危险命令：保持 `enable_dangerous_commands` 为 `false`
-5. 防火墙配置：确保端口安全
+1. 保持 `llm_permission_mode` 为 `readonly`，仅在明确需要时临时开启 FULL
+2. FULL 操作完成后立即运行 `/mc ai-mode readonly`
+3. 在 `admin_ids` 中只填写可信用户；生产环境不要留空
+4. RCON 和 MCSManager API 使用强密码，不要写入仓库、日志或截图
+5. 保持 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
 
 ## 🧪 CI 集成测试
 

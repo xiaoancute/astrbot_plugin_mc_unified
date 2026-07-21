@@ -1,17 +1,39 @@
 import time
 from typing import Dict
+
 from astrbot.api import logger
 
 
 class PermissionManager:
     """权限管理器 - 安全强化版"""
 
-    def __init__(self, admin_ids: list = None):
+    READONLY_MODE = "readonly"
+    FULL_MODE = "full"
+    FULL_CONFIRMATION = "CONFIRM"
+    FULL_WARNING = (
+        "⚠️ FULL模式允许LLM执行踢人、封禁、OP、执行命令、修改世界和启停实例等"
+        "写操作。模型可能产生幻觉、误解目标或选错服务器；启用后风险与后果由用户自行承担。"
+    )
+
+    def __init__(self, admin_ids: list = None, llm_permission_mode: str = "readonly"):
         self.admin_ids = {str(user_id) for user_id in (admin_ids or [])}
+        self.llm_permission_mode = self.normalize_llm_mode(llm_permission_mode)
         self.action_log: list = []
         self.rate_limits: Dict[str, dict] = {}
         self.max_actions_per_minute = 10
         self.max_log_entries = 100
+
+    @classmethod
+    def normalize_llm_mode(cls, mode: str) -> str:
+        value = str(mode or "").strip().casefold().replace("-", "").replace("_", "")
+        return cls.FULL_MODE if value == cls.FULL_MODE else cls.READONLY_MODE
+
+    def set_llm_permission_mode(self, mode: str) -> str:
+        self.llm_permission_mode = self.normalize_llm_mode(mode)
+        return self.llm_permission_mode
+
+    def is_llm_full_access(self) -> bool:
+        return self.llm_permission_mode == self.FULL_MODE
 
     def is_admin(self, user_id: str) -> bool:
         if not self.admin_ids or user_id is None:
@@ -50,6 +72,19 @@ class PermissionManager:
             return False, f"❌ 权限不足：用户 {user_id} 不在管理员列表中"
         self._log_action(user_id, action, True, "只读操作")
         return True, ""
+
+    def check_llm_write_permission(
+        self, user_id: str, action: str = "llm_write"
+    ) -> tuple[bool, str]:
+        """Require explicit FULL mode before any LLM-triggered write operation."""
+        if not self.is_llm_full_access():
+            self._log_action(user_id, action, False, "LLM只读模式")
+            return (
+                False,
+                "🔒 AI当前只有只读权限，已拒绝写操作。管理员如确认承担风险，"
+                "请使用 /mc ai-mode full CONFIRM 开启FULL模式。",
+            )
+        return self.check_permission(user_id, action)
 
     def _check_rate_limit(self, user_id: str) -> bool:
         now = time.time()

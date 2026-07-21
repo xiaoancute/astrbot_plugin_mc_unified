@@ -95,6 +95,7 @@ runtime/
 logs/
 instance/
 bindings.json
+group_sessions.json
 *.log
 *.pid
 *.db

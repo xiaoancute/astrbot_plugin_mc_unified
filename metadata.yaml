@@ -1,8 +1,9 @@
 name: mc_unified
-version: 1.2.0
-author: AstrBot Community
-desc: 统一的Minecraft管理插件，支持RCON、WebSocket、MCSManager等多种管理方式，集成LLM自然语言管理和QQ↔MC消息互通
-short_desc: 统一管理多个MC服务器和MCSManager面板，支持QQ↔MC消息互通
+display_name: MC Unified
+version: 1.3.0
+author: xiaoancute
+desc: 统一管理多个Minecraft服务器和MCSManager面板，LLM默认只读并支持可选QQ↔MC消息互通
+short_desc: 多服务器统一管理，LLM默认只读，支持QQ↔MC消息互通
 repo: "https://github.com/xiaoancute/astrbot_plugin_mc_unified"
 astrbot_version: ">=4.10.4"
 support_platforms:

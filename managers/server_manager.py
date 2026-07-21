@@ -17,6 +17,7 @@ class ServerProfile:
     websocket_token: str = ""
     sync_chat_mc_to_qq: bool = False
     sync_chat_qq_to_mc: bool = False
+    forward_llm_responses_to_mc: bool = False
     forward_player_events: bool = True
     mc_message_prefix: str = "[MC:{server}]"
     qq_message_prefix: str = "[QQ]"
@@ -68,6 +69,9 @@ def build_server_profiles(config: Any) -> list[ServerProfile]:
                     websocket_token=str(websocket.get("token", "")),
                     sync_chat_mc_to_qq=bool(message.get("sync_chat_mc_to_qq", False)),
                     sync_chat_qq_to_mc=bool(message.get("sync_chat_qq_to_mc", False)),
+                    forward_llm_responses_to_mc=bool(
+                        message.get("forward_llm_responses_to_mc", False)
+                    ),
                     forward_player_events=bool(
                         message.get("forward_player_events", True)
                     ),
@@ -105,6 +109,7 @@ def build_server_profiles(config: Any) -> list[ServerProfile]:
             websocket_token=str(config.get("websocket_token", "")),
             sync_chat_mc_to_qq=bool(config.get("sync_chat_mc_to_qq", False)),
             sync_chat_qq_to_mc=bool(config.get("sync_chat_qq_to_mc", False)),
+            forward_llm_responses_to_mc=bool(config.get("enable_chat_response", False)),
             forward_player_events=True,
             mc_message_prefix=str(config.get("mc_message_prefix", "[MC]")),
             qq_message_prefix=str(config.get("qq_message_prefix", "[QQ]")),

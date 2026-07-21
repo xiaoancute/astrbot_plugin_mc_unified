@@ -26,6 +26,7 @@ async def main() -> None:
     assert plugin.mcsmanager_multi_backend is None
     assert plugin.websocket_backend is None
     assert len(plugin.permission_manager.admin_ids) == 0
+    assert not plugin.permission_manager.is_llm_full_access()
 
     await plugin.initialize()
     await plugin.terminate()
@@ -48,7 +49,10 @@ async def main() -> None:
                 {
                     "server_id": "creative",
                     "display_name": "Creative",
-                    "message": {"sync_chat_qq_to_mc": True},
+                    "message": {
+                        "sync_chat_qq_to_mc": True,
+                        "forward_llm_responses_to_mc": True,
+                    },
                 },
             ],
         },
@@ -56,6 +60,7 @@ async def main() -> None:
     assert set(multi_plugin.server_registry.profiles) == {"survival", "creative"}
     assert multi_plugin.server_registry.default_server_id == "creative"
     assert multi_plugin.server_registry.get("survival").mc_tools is not None
+    assert multi_plugin.server_registry.get("creative").forward_llm_responses_to_mc
     assert multi_plugin.rcon_backend is None
 
     await multi_plugin.initialize()
