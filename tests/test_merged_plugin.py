@@ -26,6 +26,11 @@ from backends.rcon_backend import RCONBackend  # noqa: E402
 from backends.websocket_backend import WebSocketMessageBackend  # noqa: E402
 from managers.binding_manager import GroupBindingManager  # noqa: E402
 from managers.permission_manager import PermissionManager  # noqa: E402
+from managers.server_manager import (  # noqa: E402
+    ServerProfile,
+    ServerRegistry,
+    build_server_profiles,
+)
 from tools.mc_tools import MinecraftTools  # noqa: E402
 from tools.mcsmanager_tools import MCSManagerTools  # noqa: E402
 
@@ -143,6 +148,104 @@ class BindingTests(unittest.TestCase):
 
             self.assertEqual(manager.get_bound_groups(), [])
             self.assertTrue(manager.last_error)
+
+    def test_multiple_server_bindings_and_unbind_all(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = GroupBindingManager(temp_dir)
+
+            self.assertTrue(manager.bind_group("123456", "survival"))
+            self.assertTrue(manager.bind_group("123456", "creative"))
+            self.assertEqual(
+                manager.get_group_servers("123456"), ["survival", "creative"]
+            )
+
+            self.assertTrue(manager.unbind_group_from_all("123456"))
+            self.assertEqual(manager.get_group_servers("123456"), [])
+
+
+class ServerProfileTests(unittest.TestCase):
+    def test_legacy_configuration_becomes_default_profile(self):
+        profiles = build_server_profiles(
+            {
+                "rcon_enabled": True,
+                "rcon_host": "legacy.example",
+                "rcon_port": 25580,
+                "rcon_password": "secret",
+                "sync_chat_qq_to_mc": True,
+            }
+        )
+
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].server_id, "default")
+        self.assertEqual(profiles[0].rcon_host, "legacy.example")
+        self.assertEqual(profiles[0].rcon_port, 25580)
+        self.assertTrue(profiles[0].sync_chat_qq_to_mc)
+
+    def test_multiple_profiles_keep_independent_options(self):
+        profiles = build_server_profiles(
+            {
+                "mc_servers": [
+                    {
+                        "server_id": "survival",
+                        "display_name": "生存服",
+                        "rcon": {
+                            "enabled": True,
+                            "host": "survival.example",
+                            "port": 25575,
+                            "password": "one",
+                        },
+                        "message": {
+                            "sync_chat_mc_to_qq": True,
+                            "mc_message_prefix": "[{server}]",
+                        },
+                    },
+                    {
+                        "server_id": "creative",
+                        "display_name": "创造服",
+                        "websocket": {
+                            "enabled": True,
+                            "url": "ws://creative.example/ws",
+                        },
+                        "message": {"sync_chat_qq_to_mc": True},
+                    },
+                    {"server_id": "disabled", "enabled": False},
+                ]
+            }
+        )
+
+        self.assertEqual(
+            [profile.server_id for profile in profiles], ["survival", "creative"]
+        )
+        self.assertTrue(profiles[0].rcon_enabled)
+        self.assertTrue(profiles[0].sync_chat_mc_to_qq)
+        self.assertTrue(profiles[1].websocket_enabled)
+        self.assertTrue(profiles[1].sync_chat_qq_to_mc)
+
+    def test_registry_requires_selection_for_multi_bound_group(self):
+        registry = ServerRegistry("survival")
+        registry.add(ServerProfile("survival", "生存服"))
+        registry.add(ServerProfile("creative", "创造服"))
+        registry.finalize_default()
+
+        server_id, error = registry.resolve_id(
+            bound_server_ids=["survival", "creative"]
+        )
+        self.assertIsNone(server_id)
+        self.assertIn("多个服务器", error)
+
+        server_id, error = registry.resolve_id(
+            selected="creative", bound_server_ids=["survival", "creative"]
+        )
+        self.assertEqual(server_id, "creative")
+        self.assertEqual(error, "")
+
+    def test_legacy_default_binding_maps_to_configured_default(self):
+        registry = ServerRegistry("survival")
+        registry.add(ServerProfile("survival", "生存服"))
+        registry.add(ServerProfile("creative", "创造服"))
+        registry.finalize_default()
+
+        self.assertEqual(registry.normalize_bound_ids(["default"]), ["survival"])
 
 
 class _FakePanel:

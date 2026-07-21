@@ -1,5 +1,20 @@
 # 更新日志
 
+## v1.1.0
+
+### 新增
+
+- 新增命名 Minecraft 服务器列表，每个服务器可独立配置 RCON、WebSocket 和消息同步
+- 新增默认服务器、每用户当前服务器选择，以及 `mc servers` / `mc use` / `mc bindings` 命令
+- QQ群可同时绑定多个服务器，QQ→MC消息按绑定扇出，MC→QQ消息按来源服务器隔离
+- 新增 `minecraft_get_servers` 和 `minecraft_select_server` LLM工具
+
+### 兼容性
+
+- 未配置服务器列表时自动使用旧版单服配置，无需立即迁移
+- 旧版 `default` 群绑定会自动映射到新的默认服务器
+- MCSManager多面板和多实例管理保持独立可用
+
 ## v1.0.1
 
 ### 修复

@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+from functools import partial
 import os
 
 from astrbot.api.star import Context, Star, register
@@ -13,6 +14,7 @@ from .tools.mc_tools import MinecraftTools
 from .tools.mcsmanager_tools import MCSManagerTools
 from .managers.permission_manager import PermissionManager
 from .managers.binding_manager import GroupBindingManager
+from .managers.server_manager import ServerRegistry, build_server_profiles
 from .utils.message_utils import MessageUtils
 
 
@@ -20,7 +22,7 @@ from .utils.message_utils import MessageUtils
     "mc_unified",
     "AstrBot Community",
     "统一的Minecraft管理插件，支持RCON、WebSocket、MCSManager等多种管理方式，集成LLM自然语言管理和QQ↔MC消息互通",
-    "1.0.1",
+    "1.1.0",
     "https://github.com/xiaoancute/astrbot_plugin_mc_unified",
 )
 class MCUnifiedPlugin(Star):
@@ -38,10 +40,14 @@ class MCUnifiedPlugin(Star):
         self.data_dir = os.path.join(astrbot_data_dir, "mc_unified")
         os.makedirs(self.data_dir, exist_ok=True)
 
+        self.server_registry = ServerRegistry(self.config.get("default_server", ""))
+        self._selected_servers = {}
+        self._websocket_tasks = {}
+
+        # Legacy aliases point to the configured default profile.
         self.rcon_backend = None
         self.mcsmanager_multi_backend = None
         self.websocket_backend = None
-        self._websocket_task = None
         self._selected_mcsmanager_panels = {}
 
         self.mc_tools = None
@@ -62,12 +68,55 @@ class MCUnifiedPlugin(Star):
         logger.info("MC Unified插件已加载")
 
     def _init_backends(self):
-        if self.config.get("rcon_enabled", False):
-            host = self.config.get("rcon_host", "localhost")
-            port = self.config.get("rcon_port", 25575)
-            password = self.config.get("rcon_password", "")
-            self.rcon_backend = RCONBackend(host, port, password)
-            logger.info(f"RCON后端已初始化: {host}:{port}")
+        for profile in build_server_profiles(self.config):
+            if not self.server_registry.add(profile):
+                logger.warning(f"忽略重复的服务器ID: {profile.server_id}")
+                continue
+
+            if profile.rcon_enabled:
+                profile.rcon_backend = RCONBackend(
+                    profile.rcon_host,
+                    profile.rcon_port,
+                    profile.rcon_password,
+                )
+                logger.info(
+                    f"[{profile.server_id}] RCON后端已初始化: "
+                    f"{profile.rcon_host}:{profile.rcon_port}"
+                )
+
+            if profile.websocket_enabled:
+                profile.websocket_backend = WebSocketMessageBackend(
+                    profile.websocket_url, profile.websocket_token
+                )
+                profile.websocket_backend.set_message_callback(
+                    partial(self._on_mc_chat, profile.server_id)
+                )
+                profile.websocket_backend.set_player_join_callback(
+                    partial(self._on_player_join, profile.server_id)
+                )
+                profile.websocket_backend.set_player_leave_callback(
+                    partial(self._on_player_leave, profile.server_id)
+                )
+                profile.websocket_backend.set_player_death_callback(
+                    partial(self._on_player_death, profile.server_id)
+                )
+                logger.info(
+                    f"[{profile.server_id}] WebSocket后端已初始化: "
+                    f"{profile.websocket_url}"
+                )
+
+        self.server_registry.finalize_default()
+        default_profile = self.server_registry.get(
+            self.server_registry.default_server_id
+        )
+        if default_profile:
+            self.rcon_backend = default_profile.rcon_backend
+            self.websocket_backend = default_profile.websocket_backend
+
+        logger.info(
+            f"Minecraft服务器配置已加载，共 {len(self.server_registry.profiles)} 个，"
+            f"默认服务器: {self.server_registry.default_server_id or '无'}"
+        )
 
         if self.config.get("mcsmanager_enabled", False):
             self.mcsmanager_multi_backend = MCSManagerMultiBackend()
@@ -82,24 +131,18 @@ class MCUnifiedPlugin(Star):
                         self.mcsmanager_multi_backend.add_backend(name, url, api_key)
                 logger.info(f"MCSManager多面板后端已初始化，共 {len(panels)} 个面板")
 
-        if self.config.get("websocket_enabled", False):
-            ws_url = self.config.get(
-                "websocket_url", "ws://127.0.0.1:8080/minecraft/ws"
-            )
-            token = self.config.get("websocket_token", "")
-            self.websocket_backend = WebSocketMessageBackend(ws_url, token)
-            self.websocket_backend.set_message_callback(self._on_mc_chat)
-            self.websocket_backend.set_player_join_callback(self._on_player_join)
-            self.websocket_backend.set_player_leave_callback(self._on_player_leave)
-            self.websocket_backend.set_player_death_callback(self._on_player_death)
-            logger.info(f"WebSocket后端已初始化: {ws_url}")
-
     def _init_tools(self):
-        if self.rcon_backend:
-            self.mc_tools = MinecraftTools(self.rcon_backend)
-            self.mc_tools.set_dangerous_commands_enabled(
-                self.config.get("enable_dangerous_commands", False)
-            )
+        for profile in self.server_registry.all():
+            if profile.rcon_backend:
+                profile.mc_tools = MinecraftTools(profile.rcon_backend)
+                profile.mc_tools.set_dangerous_commands_enabled(
+                    profile.enable_dangerous_commands
+                )
+
+        default_profile = self.server_registry.get(
+            self.server_registry.default_server_id
+        )
+        self.mc_tools = default_profile.mc_tools if default_profile else None
 
         if self.mcsmanager_multi_backend:
             self.mcsmanager_tools = MCSManagerTools(self.mcsmanager_multi_backend)
@@ -110,59 +153,77 @@ class MCUnifiedPlugin(Star):
         self.binding_manager = GroupBindingManager(self.data_dir)
 
     async def initialize(self):
-        if self.websocket_backend:
-            self._websocket_task = asyncio.create_task(
-                self.websocket_backend.start_listening()
-            )
-            logger.info("WebSocket监听已启动")
+        for profile in self.server_registry.all():
+            if profile.websocket_backend:
+                self._websocket_tasks[profile.server_id] = asyncio.create_task(
+                    profile.websocket_backend.start_listening()
+                )
+                logger.info(f"[{profile.server_id}] WebSocket监听已启动")
 
     async def terminate(self):
-        if self.rcon_backend:
-            await self.rcon_backend.disconnect()
+        for profile in self.server_registry.all():
+            if profile.rcon_backend:
+                await profile.rcon_backend.disconnect()
 
         if self.mcsmanager_multi_backend:
             await self.mcsmanager_multi_backend.terminate_all()
 
-        if self.websocket_backend:
-            await self.websocket_backend.stop_listening()
-            if self._websocket_task:
+        for profile in self.server_registry.all():
+            if profile.websocket_backend:
+                await profile.websocket_backend.stop_listening()
+            websocket_task = self._websocket_tasks.get(profile.server_id)
+            if websocket_task:
                 try:
-                    await asyncio.wait_for(self._websocket_task, timeout=5)
+                    await asyncio.wait_for(websocket_task, timeout=5)
                 except TimeoutError:
-                    self._websocket_task.cancel()
+                    websocket_task.cancel()
                     with suppress(asyncio.CancelledError):
-                        await self._websocket_task
-                self._websocket_task = None
+                        await websocket_task
+        self._websocket_tasks.clear()
 
         logger.info("MC Unified插件已卸载")
 
-    async def _on_mc_chat(self, player: str, message: str):
-        if not self.config.get("sync_chat_mc_to_qq", False):
+    async def _on_mc_chat(self, server_id: str, player: str, message: str):
+        profile = self.server_registry.get(server_id)
+        if not profile or not profile.sync_chat_mc_to_qq:
             return
 
-        prefix = self.config.get("mc_message_prefix", "[MC]")
+        prefix = profile.format_prefix(profile.mc_message_prefix)
         formatted = MessageUtils.format_mc_message(player, message, prefix)
 
-        bound_groups = self.binding_manager.get_bound_groups()
+        bound_groups = self._get_bound_groups(server_id)
         for group_id in bound_groups:
             await self._send_to_qq_group(group_id, formatted)
 
-    async def _on_player_join(self, player: str):
-        message = f"[系统消息] {player} 加入了游戏"
-        await self._send_to_bound_groups(message)
+    async def _on_player_join(self, server_id: str, player: str):
+        await self._send_player_event(server_id, f"{player} 加入了游戏")
 
-    async def _on_player_leave(self, player: str):
-        message = f"[系统消息] {player} 离开了游戏"
-        await self._send_to_bound_groups(message)
+    async def _on_player_leave(self, server_id: str, player: str):
+        await self._send_player_event(server_id, f"{player} 离开了游戏")
 
-    async def _on_player_death(self, player: str, reason: str):
-        message = f"[系统消息] {reason}"
-        await self._send_to_bound_groups(message)
+    async def _on_player_death(self, server_id: str, player: str, reason: str):
+        await self._send_player_event(server_id, reason)
 
-    async def _send_to_bound_groups(self, message: str):
-        bound_groups = self.binding_manager.get_bound_groups()
+    async def _send_player_event(self, server_id: str, event_text: str):
+        profile = self.server_registry.get(server_id)
+        if not profile or not profile.forward_player_events:
+            return
+        message = f"[系统消息][{profile.label}] {event_text}"
+        await self._send_to_bound_groups(server_id, message)
+
+    async def _send_to_bound_groups(self, server_id: str, message: str):
+        bound_groups = self._get_bound_groups(server_id)
         for group_id in bound_groups:
             await self._send_to_qq_group(group_id, message)
+
+    def _get_bound_groups(self, server_id: str) -> list[str]:
+        groups = list(self.binding_manager.get_bound_groups(server_id))
+        if (
+            server_id == self.server_registry.default_server_id
+            and server_id != "default"
+        ):
+            groups.extend(self.binding_manager.get_bound_groups("default"))
+        return list(dict.fromkeys(groups))
 
     async def _send_to_qq_group(self, group_id: str, message: str):
         try:
@@ -184,14 +245,82 @@ class MCUnifiedPlugin(Star):
         except Exception as e:
             logger.error(f"发送消息到QQ群失败: {e}")
 
-    async def _send_to_mc(self, message: str):
-        prefix = self.config.get("qq_message_prefix", "[QQ]")
+    async def _send_to_mc(self, server_id: str, message: str) -> str:
+        profile = self.server_registry.get(server_id)
+        if not profile:
+            return f"❌ 找不到服务器: {server_id}"
+
+        prefix = profile.format_prefix(profile.qq_message_prefix)
         formatted = f"{prefix} {message}"
 
-        if self.rcon_backend:
-            await self.rcon_backend.send_message(formatted)
-        elif self.websocket_backend:
-            await self.websocket_backend.send_to_mc(formatted)
+        transport = profile.message_transport
+        if transport == "websocket":
+            if profile.websocket_backend:
+                return await profile.websocket_backend.send_to_mc(formatted)
+            return f"❌ 服务器 {profile.label} 未启用 WebSocket"
+        if transport == "rcon":
+            if profile.rcon_backend:
+                return await profile.rcon_backend.send_message(formatted)
+            return f"❌ 服务器 {profile.label} 未启用 RCON"
+        if profile.rcon_backend:
+            return await profile.rcon_backend.send_message(formatted)
+        if profile.websocket_backend:
+            return await profile.websocket_backend.send_to_mc(formatted)
+        return f"❌ 服务器 {profile.label} 未配置 RCON 或 WebSocket"
+
+    def _get_group_server_ids(self, group_id: str | None) -> list[str]:
+        if not group_id:
+            return []
+        return self.server_registry.normalize_bound_ids(
+            self.binding_manager.get_group_servers(group_id)
+        )
+
+    def _resolve_server_id(
+        self, event: AstrMessageEvent, requested: str = ""
+    ) -> tuple[str | None, str]:
+        user_id = str(event.get_sender_id() or "")
+        group_id = event.get_group_id()
+        return self.server_registry.resolve_id(
+            requested=requested,
+            selected=self._selected_servers.get(user_id),
+            bound_server_ids=self._get_group_server_ids(group_id),
+        )
+
+    def _get_mc_tools(
+        self, event: AstrMessageEvent, requested: str = ""
+    ) -> tuple[object | None, str, str | None]:
+        server_id, error = self._resolve_server_id(event, requested)
+        if not server_id:
+            return None, error, None
+        profile = self.server_registry.get(server_id)
+        if not profile or not profile.mc_tools:
+            label = profile.label if profile else server_id
+            return None, f"❌ 服务器 {label} 未启用 RCON", server_id
+        return profile.mc_tools, "", server_id
+
+    def _format_server_list(self, event: AstrMessageEvent) -> str:
+        selected_id = self._selected_servers.get(str(event.get_sender_id() or ""))
+        bound_ids = set(self._get_group_server_ids(event.get_group_id()))
+        lines = ["🖥️ Minecraft 服务器列表:"]
+        for profile in self.server_registry.all():
+            flags = []
+            if profile.server_id == self.server_registry.default_server_id:
+                flags.append("默认")
+            if profile.server_id == selected_id:
+                flags.append("当前")
+            if profile.server_id in bound_ids:
+                flags.append("本群已绑定")
+            transports = []
+            if profile.rcon_backend:
+                transports.append("RCON")
+            if profile.websocket_backend:
+                transports.append("WS")
+            suffix = f" [{' / '.join(flags)}]" if flags else ""
+            lines.append(
+                f"- {profile.server_id}: {profile.label} "
+                f"({'+'.join(transports) or '未配置连接'}){suffix}"
+            )
+        return "\n".join(lines)
 
     def _check_permission(
         self, event: AstrMessageEvent, action: str = "unknown"
@@ -219,19 +348,19 @@ class MCUnifiedPlugin(Star):
             if self.config.get("enable_chat_response", True):
                 response_text = str(response) if response else ""
                 if response_text and response_text.strip() not in ["*No response*", ""]:
-                    await self._send_to_mc(response_text)
+                    server_id, _ = self._resolve_server_id(event)
+                    if server_id:
+                        await self._send_to_mc(server_id, response_text)
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_qq_group_message(self, event: AstrMessageEvent):
-        if not self.config.get("sync_chat_qq_to_mc", False):
-            return
-
         group_id = event.get_group_id()
         if not group_id:
             return
 
-        if not self.binding_manager.is_group_bound(group_id):
+        server_ids = self._get_group_server_ids(group_id)
+        if not server_ids:
             return
 
         message_text = (event.message_str or "").strip()
@@ -239,10 +368,62 @@ class MCUnifiedPlugin(Star):
             return
 
         sender_name = event.get_sender_name() or event.get_sender_id()
-        await self._send_to_mc(f"{sender_name}: {message_text}")
+        for server_id in server_ids:
+            profile = self.server_registry.get(server_id)
+            if profile and profile.sync_chat_qq_to_mc:
+                await self._send_to_mc(server_id, f"{sender_name}: {message_text}")
+
+    @filter.command("mc servers")
+    async def cmd_mc_servers(self, event: AstrMessageEvent):
+        has_permission, error_msg = self._check_read_only(event, "mc_servers")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+        yield event.plain_result(self._format_server_list(event))
+
+    @filter.command("mc use")
+    async def cmd_mc_use(self, event: AstrMessageEvent, server_name: str):
+        has_permission, error_msg = self._check_permission(event, "mc_use")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+
+        server_id = self.server_registry.match_id(server_name)
+        if not server_id:
+            yield event.plain_result(f"❌ 找不到服务器: {server_name}")
+            return
+
+        self._selected_servers[str(event.get_sender_id())] = server_id
+        profile = self.server_registry.get(server_id)
+        yield event.plain_result(
+            f"✅ 当前管理服务器已切换为 {profile.label} ({server_id})"
+        )
+
+    @filter.command("mc bindings")
+    async def cmd_mc_bindings(self, event: AstrMessageEvent):
+        has_permission, error_msg = self._check_read_only(event, "mc_bindings")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("❌ 请在QQ群中使用此命令")
+            return
+
+        server_ids = self._get_group_server_ids(group_id)
+        if not server_ids:
+            yield event.plain_result("ℹ️ 当前群尚未绑定任何服务器")
+            return
+
+        labels = [
+            f"{self.server_registry.get(server_id).label} ({server_id})"
+            for server_id in server_ids
+        ]
+        yield event.plain_result("🔗 当前群已绑定:\n- " + "\n- ".join(labels))
 
     @filter.command("mc bind")
-    async def cmd_mc_bind(self, event: AstrMessageEvent):
+    async def cmd_mc_bind(self, event: AstrMessageEvent, server_name: str = ""):
         has_permission, error_msg = self._check_permission(event, "mc_bind")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -253,16 +434,24 @@ class MCUnifiedPlugin(Star):
             yield event.plain_result("❌ 请在QQ群中使用此命令")
             return
 
-        success = self.binding_manager.bind_group(group_id)
+        server_id, resolve_error = self._resolve_server_id(event, server_name)
+        if not server_id:
+            yield event.plain_result(resolve_error)
+            return
+
+        profile = self.server_registry.get(server_id)
+        success = self.binding_manager.bind_group(group_id, server_id)
         if success:
-            yield event.plain_result("✅ 已将当前群绑定到MC服务器")
+            yield event.plain_result(
+                f"✅ 已将当前群绑定到 {profile.label} ({server_id})"
+            )
         elif self.binding_manager.last_error:
             yield event.plain_result(f"❌ {self.binding_manager.last_error}")
         else:
-            yield event.plain_result("⚠️ 当前群已绑定")
+            yield event.plain_result(f"⚠️ 当前群已绑定 {profile.label}")
 
     @filter.command("mc unbind")
-    async def cmd_mc_unbind(self, event: AstrMessageEvent):
+    async def cmd_mc_unbind(self, event: AstrMessageEvent, server_name: str = ""):
         has_permission, error_msg = self._check_permission(event, "mc_unbind")
         if not has_permission:
             yield event.plain_result(error_msg)
@@ -273,30 +462,56 @@ class MCUnifiedPlugin(Star):
             yield event.plain_result("❌ 请在QQ群中使用此命令")
             return
 
-        success = self.binding_manager.unbind_group(group_id)
+        if server_name.casefold() == "all":
+            success = self.binding_manager.unbind_group_from_all(group_id)
+            target_label = "全部服务器"
+        else:
+            bound_ids = self._get_group_server_ids(group_id)
+            if not server_name and len(bound_ids) > 1:
+                yield event.plain_result(
+                    "❌ 当前群绑定了多个服务器，请使用 mc unbind <服务器ID> 或 mc unbind all"
+                )
+                return
+            requested = server_name or (bound_ids[0] if bound_ids else "")
+            server_id, resolve_error = self._resolve_server_id(event, requested)
+            if not server_id:
+                yield event.plain_result(resolve_error)
+                return
+            profile = self.server_registry.get(server_id)
+            success = self.binding_manager.unbind_group(group_id, server_id)
+            if (
+                not success
+                and server_id == self.server_registry.default_server_id
+                and server_id != "default"
+            ):
+                success = self.binding_manager.unbind_group(group_id, "default")
+            target_label = profile.label
+
         if success:
-            yield event.plain_result("✅ 已解除当前群与MC服务器的绑定")
+            yield event.plain_result(f"✅ 已解除当前群与{target_label}的绑定")
         elif self.binding_manager.last_error:
             yield event.plain_result(f"❌ {self.binding_manager.last_error}")
         else:
-            yield event.plain_result("⚠️ 当前群未绑定")
+            yield event.plain_result(f"⚠️ 当前群未绑定{target_label}")
 
     @filter.command("mc test")
-    async def cmd_mc_test(self, event: AstrMessageEvent):
+    async def cmd_mc_test(self, event: AstrMessageEvent, server_name: str = ""):
         has_permission, error_msg = self._check_permission(event, "mc_test")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
 
-        if not self.rcon_backend:
-            yield event.plain_result("❌ RCON后端未启用")
+        mc_tools, resolve_error, server_id = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            yield event.plain_result(resolve_error)
             return
 
-        success, message = await self._test_rcon_connection()
+        profile = self.server_registry.get(server_id)
+        success, message = await self._test_rcon_connection(server_id)
         if success:
-            yield event.plain_result(f"✅ RCON连接成功\n{message}")
+            yield event.plain_result(f"✅ {profile.label} RCON连接成功\n{message}")
         else:
-            yield event.plain_result(f"❌ RCON连接失败\n{message}")
+            yield event.plain_result(f"❌ {profile.label} RCON连接失败\n{message}")
 
     @filter.command("mc log")
     async def cmd_mc_log(self, event: AstrMessageEvent):
@@ -329,8 +544,42 @@ class MCUnifiedPlugin(Star):
 
         yield event.plain_result(result)
 
-    async def _test_rcon_connection(self) -> tuple[bool, str]:
-        return await self.rcon_backend.execute_command_checked("list")
+    async def _test_rcon_connection(self, server_id: str) -> tuple[bool, str]:
+        profile = self.server_registry.get(server_id)
+        if not profile or not profile.rcon_backend:
+            return False, "RCON后端未启用"
+        return await profile.rcon_backend.execute_command_checked("list")
+
+    @filter.llm_tool(name="minecraft_get_servers")
+    async def tool_minecraft_get_servers(self, event: AstrMessageEvent) -> str:
+        """查看所有 Minecraft 服务器和当前选择、群绑定及连接方式。"""
+        has_permission, error_msg = self._check_read_only(
+            event, "minecraft_get_servers"
+        )
+        if not has_permission:
+            return error_msg
+        return self._format_server_list(event)
+
+    @filter.llm_tool(name="minecraft_select_server")
+    async def tool_minecraft_select_server(
+        self, event: AstrMessageEvent, server_name: str
+    ) -> str:
+        """选择后续 Minecraft 管理工具操作的服务器。
+
+        Args:
+            server_name(string): 配置中的服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_permission(
+            event, "minecraft_select_server"
+        )
+        if not has_permission:
+            return error_msg
+        server_id = self.server_registry.match_id(server_name)
+        if not server_id:
+            return f"❌ 找不到服务器: {server_name}"
+        self._selected_servers[str(event.get_sender_id())] = server_id
+        profile = self.server_registry.get(server_id)
+        return f"✅ 已选择服务器: {profile.label} ({server_id})"
 
     @filter.llm_tool(name="list_players")
     async def tool_list_players(self, event: AstrMessageEvent) -> str:
@@ -338,9 +587,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_read_only(event, "list_players")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.list_players()
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.list_players()
 
     @filter.llm_tool(name="kick_player")
     async def tool_kick_player(
@@ -355,9 +605,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "kick_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.kick_player(player, reason)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.kick_player(player, reason)
 
     @filter.llm_tool(name="ban_player")
     async def tool_ban_player(
@@ -372,9 +623,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "ban_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.ban_player(player, reason)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.ban_player(player, reason)
 
     @filter.llm_tool(name="pardon_player")
     async def tool_pardon_player(self, event: AstrMessageEvent, player: str) -> str:
@@ -386,9 +638,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "pardon_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.pardon_player(player)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.pardon_player(player)
 
     @filter.llm_tool(name="op_player")
     async def tool_op_player(self, event: AstrMessageEvent, player: str) -> str:
@@ -400,9 +653,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "op_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.op_player(player)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.op_player(player)
 
     @filter.llm_tool(name="deop_player")
     async def tool_deop_player(self, event: AstrMessageEvent, player: str) -> str:
@@ -414,9 +668,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "deop_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.deop_player(player)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.deop_player(player)
 
     @filter.llm_tool(name="whitelist_add")
     async def tool_whitelist_add(self, event: AstrMessageEvent, player: str) -> str:
@@ -428,9 +683,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "whitelist_add")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.whitelist_add(player)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.whitelist_add(player)
 
     @filter.llm_tool(name="whitelist_remove")
     async def tool_whitelist_remove(self, event: AstrMessageEvent, player: str) -> str:
@@ -442,9 +698,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "whitelist_remove")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.whitelist_remove(player)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.whitelist_remove(player)
 
     @filter.llm_tool(name="whitelist_list")
     async def tool_whitelist_list(self, event: AstrMessageEvent) -> str:
@@ -452,9 +709,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_read_only(event, "whitelist_list")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.whitelist_list()
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.whitelist_list()
 
     @filter.llm_tool(name="banlist")
     async def tool_banlist(
@@ -468,9 +726,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_read_only(event, "banlist")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.banlist(ban_type)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.banlist(ban_type)
 
     @filter.llm_tool(name="give_item")
     async def tool_give_item(
@@ -486,9 +745,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "give_item")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.give_item(player, item, count)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.give_item(player, item, count)
 
     @filter.llm_tool(name="teleport_player")
     async def tool_teleport_player(
@@ -503,9 +763,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "teleport_player")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.teleport_player(player, target)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.teleport_player(player, target)
 
     @filter.llm_tool(name="set_gamemode")
     async def tool_set_gamemode(
@@ -520,9 +781,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "set_gamemode")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.set_gamemode(player, mode)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_gamemode(player, mode)
 
     @filter.llm_tool(name="say_message")
     async def tool_say_message(self, event: AstrMessageEvent, message: str) -> str:
@@ -534,9 +796,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "say_message")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.say_message(message)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.say_message(message)
 
     @filter.llm_tool(name="execute_command")
     async def tool_execute_command(self, event: AstrMessageEvent, command: str) -> str:
@@ -548,9 +811,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "execute_command")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.execute_command(command)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.execute_command(command)
 
     @filter.llm_tool(name="set_weather")
     async def tool_set_weather(
@@ -565,9 +829,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "set_weather")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.set_weather(weather_type, duration)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_weather(weather_type, duration)
 
     @filter.llm_tool(name="set_time")
     async def tool_set_time(self, event: AstrMessageEvent, time_value: str) -> str:
@@ -579,9 +844,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "set_time")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.set_time(time_value)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_time(time_value)
 
     @filter.llm_tool(name="set_difficulty")
     async def tool_set_difficulty(
@@ -595,9 +861,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "set_difficulty")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.set_difficulty(difficulty)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_difficulty(difficulty)
 
     @filter.llm_tool(name="set_gamerule")
     async def tool_set_gamerule(
@@ -612,9 +879,10 @@ class MCUnifiedPlugin(Star):
         has_permission, error_msg = self._check_permission(event, "set_gamerule")
         if not has_permission:
             return error_msg
-        if not self.mc_tools:
-            return "❌ MC工具未初始化，请先启用RCON"
-        return await self.mc_tools.set_gamerule(rule, value)
+        mc_tools, error, _ = self._get_mc_tools(event)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_gamerule(rule, value)
 
     @filter.llm_tool(name="mcsmanager_get_panels")
     async def tool_mcsmanager_get_panels(self, event: AstrMessageEvent) -> str:

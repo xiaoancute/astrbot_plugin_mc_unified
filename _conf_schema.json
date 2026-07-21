@@ -1,8 +1,145 @@
 {
+  "default_server": {
+    "type": "string",
+    "description": "默认服务器ID",
+    "hint": "管理工具未明确指定服务器时使用的服务器ID；留空则使用服务器列表中的第一项",
+    "default": ""
+  },
+  "mc_servers": {
+    "type": "template_list",
+    "description": "Minecraft服务器列表",
+    "hint": "添加多个命名服务器。配置此列表后，下方旧版单服连接配置将不再生效",
+    "default": [],
+    "templates": {
+      "server": {
+        "name": "Minecraft服务器",
+        "display_item": "server_id",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用此服务器",
+            "default": true
+          },
+          "server_id": {
+            "type": "string",
+            "description": "服务器ID",
+            "hint": "唯一标识，例如 survival、creative、modded；用于命令、群绑定和LLM工具选择",
+            "default": "survival"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "显示名称",
+            "hint": "发送消息和列出服务器时展示的名称",
+            "default": "生存服"
+          },
+          "enable_dangerous_commands": {
+            "type": "bool",
+            "description": "允许危险命令",
+            "hint": "是否允许在此服务器执行stop、reload等危险命令，建议保持关闭",
+            "default": false
+          },
+          "rcon": {
+            "type": "object",
+            "description": "RCON连接",
+            "items": {
+              "enabled": {
+                "type": "bool",
+                "description": "启用RCON",
+                "default": false
+              },
+              "host": {
+                "type": "string",
+                "description": "主机地址",
+                "hint": "Minecraft服务器的IP地址或域名",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "int",
+                "description": "RCON端口",
+                "default": 25575
+              },
+              "password": {
+                "type": "string",
+                "description": "RCON密码",
+                "default": ""
+              }
+            }
+          },
+          "websocket": {
+            "type": "object",
+            "description": "WebSocket/鹊桥连接",
+            "items": {
+              "enabled": {
+                "type": "bool",
+                "description": "启用WebSocket",
+                "default": false
+              },
+              "url": {
+                "type": "string",
+                "description": "WebSocket地址",
+                "default": "ws://127.0.0.1:8080/minecraft/ws"
+              },
+              "token": {
+                "type": "string",
+                "description": "认证令牌",
+                "default": ""
+              }
+            }
+          },
+          "message": {
+            "type": "object",
+            "description": "消息互通",
+            "items": {
+              "sync_chat_mc_to_qq": {
+                "type": "bool",
+                "description": "MC→QQ聊天同步",
+                "default": false
+              },
+              "sync_chat_qq_to_mc": {
+                "type": "bool",
+                "description": "QQ→MC聊天同步",
+                "default": false
+              },
+              "forward_player_events": {
+                "type": "bool",
+                "description": "转发玩家加入/退出/死亡事件",
+                "default": true
+              },
+              "transport": {
+                "type": "string",
+                "description": "QQ→MC发送方式",
+                "hint": "auto自动选择；也可强制使用RCON或WebSocket",
+                "options": ["auto", "rcon", "websocket"],
+                "default": "auto"
+              },
+              "mc_message_prefix": {
+                "type": "string",
+                "description": "MC→QQ消息前缀",
+                "hint": "支持{server}显示名称和{server_id}服务器ID占位符",
+                "default": "[MC:{server}]"
+              },
+              "qq_message_prefix": {
+                "type": "string",
+                "description": "QQ→MC消息前缀",
+                "hint": "支持{server}显示名称和{server_id}服务器ID占位符",
+                "default": "[QQ]"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "server_display_name": {
+    "type": "string",
+    "description": "旧版单服显示名称",
+    "hint": "仅当Minecraft服务器列表为空时使用",
+    "default": "默认服务器"
+  },
   "rcon_enabled": {
     "type": "bool",
-    "description": "启用RCON",
-    "hint": "是否启用RCON协议管理MC服务器",
+    "description": "旧版单服：启用RCON",
+    "hint": "仅当Minecraft服务器列表为空时使用",
     "default": false
   },
   "rcon_host": {

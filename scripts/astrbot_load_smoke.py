@@ -29,6 +29,37 @@ async def main() -> None:
 
     await plugin.initialize()
     await plugin.terminate()
+
+    multi_plugin = plugin_module.MCUnifiedPlugin(
+        DummyContext(),
+        {
+            "default_server": "creative",
+            "mc_servers": [
+                {
+                    "server_id": "survival",
+                    "display_name": "Survival",
+                    "rcon": {
+                        "enabled": True,
+                        "host": "127.0.0.1",
+                        "port": 25575,
+                        "password": "smoke-only",
+                    },
+                },
+                {
+                    "server_id": "creative",
+                    "display_name": "Creative",
+                    "message": {"sync_chat_qq_to_mc": True},
+                },
+            ],
+        },
+    )
+    assert set(multi_plugin.server_registry.profiles) == {"survival", "creative"}
+    assert multi_plugin.server_registry.default_server_id == "creative"
+    assert multi_plugin.server_registry.get("survival").mc_tools is not None
+    assert multi_plugin.rcon_backend is None
+
+    await multi_plugin.initialize()
+    await multi_plugin.terminate()
     print("AstrBot plugin load smoke passed")
 
 

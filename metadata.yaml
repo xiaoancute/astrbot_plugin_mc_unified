@@ -1,5 +1,5 @@
 name: mc_unified
-version: 1.0.1
+version: 1.1.0
 author: AstrBot Community
 desc: 统一的Minecraft管理插件，支持RCON、WebSocket、MCSManager等多种管理方式，集成LLM自然语言管理和QQ↔MC消息互通
 short_desc: 统一管理多个MC服务器和MCSManager面板，支持QQ↔MC消息互通

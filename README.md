@@ -46,14 +46,73 @@
 
 在 AstrBot 管理面板中配置本插件：
 
-### RCON 配置
+### 多服务器配置
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `rcon_enabled` | 是否启用 RCON | `false` |
-| `rcon_host` | MC 服务器地址 | `localhost` |
-| `rcon_port` | RCON 端口 | `25575` |
-| `rcon_password` | RCON 密码 | - |
+使用 `mc_servers` 添加命名服务器，每个条目均可独立设置：
+
+- 服务器ID和显示名称
+- RCON地址、端口、密码及危险命令开关
+- WebSocket/鹊桥地址和令牌
+- MC→QQ、QQ→MC、玩家事件同步开关
+- 消息发送方式及带服务器名称占位符的前缀
+
+`default_server` 指定默认服务器ID。一个QQ群可以绑定一个或多个服务器；管理操作
+若遇到多个绑定，会要求先使用 `mc use <服务器ID>` 选择，避免误操作。
+
+```json
+{
+  "default_server": "survival",
+  "mc_servers": [
+    {
+      "__template_key": "server",
+      "enabled": true,
+      "server_id": "survival",
+      "display_name": "生存服",
+      "enable_dangerous_commands": false,
+      "rcon": {
+        "enabled": true,
+        "host": "10.0.0.10",
+        "port": 25575,
+        "password": "your_rcon_password"
+      },
+      "websocket": {
+        "enabled": true,
+        "url": "ws://10.0.0.10:8080/minecraft/ws",
+        "token": "your_websocket_token"
+      },
+      "message": {
+        "sync_chat_mc_to_qq": true,
+        "sync_chat_qq_to_mc": true,
+        "forward_player_events": true,
+        "transport": "auto",
+        "mc_message_prefix": "[MC:{server}]",
+        "qq_message_prefix": "[QQ]"
+      }
+    },
+    {
+      "__template_key": "server",
+      "enabled": true,
+      "server_id": "creative",
+      "display_name": "创造服",
+      "rcon": {
+        "enabled": true,
+        "host": "10.0.0.11",
+        "port": 25575,
+        "password": "another_password"
+      },
+      "websocket": {"enabled": false},
+      "message": {
+        "sync_chat_mc_to_qq": false,
+        "sync_chat_qq_to_mc": true,
+        "transport": "rcon"
+      }
+    }
+  ]
+}
+```
+
+> 未添加 `mc_servers` 时，插件会自动把旧版全局 RCON/WebSocket 配置作为
+> `default` 服务器加载，现有单服用户无需立刻迁移。
 
 ### MCSManager 配置
 
@@ -84,15 +143,16 @@
 
 > 在 WebUI 中通过「添加模板」按钮即可可视化配置，无需手写 JSON。
 
-### WebSocket 配置
+### 旧版单服连接配置
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
+| `rcon_enabled` / `rcon_host` / `rcon_port` / `rcon_password` | 旧版单服RCON | - |
 | `websocket_enabled` | 是否启用 WebSocket | `false` |
 | `websocket_url` | WebSocket 地址 | `ws://127.0.0.1:8080/minecraft/ws` |
 | `websocket_token` | 认证令牌 | - |
 
-### 消息互通配置
+### 旧版单服消息互通配置
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
@@ -114,8 +174,13 @@
 
 ```
 mc bind      - 绑定当前群到 MC 服务器
-mc unbind    - 解除当前群绑定
-mc test      - 测试 RCON 连接
+mc servers   - 查看全部服务器、默认项、当前选择和本群绑定
+mc use survival - 选择当前管理员后续操作的服务器
+mc bind survival - 将当前群绑定到生存服，可重复绑定多个服
+mc bindings  - 查看当前群绑定的全部服务器
+mc unbind survival - 解除指定服务器绑定
+mc unbind all - 解除当前群的全部服务器绑定
+mc test survival - 测试指定服务器的 RCON 连接
 mc log       - 查看操作日志（最近20条）
 mc security  - 查看当前安全状态
 ```
@@ -148,6 +213,8 @@ mc security  - 查看当前安全状态
 
 | 工具名 | 功能 | 权限 |
 |--------|------|------|
+| `minecraft_get_servers` | 查看服务器、选择和群绑定 | 无需权限 |
+| `minecraft_select_server` | 选择后续管理操作的服务器 | 管理员 |
 | `list_players` | 查看在线玩家 | 无需权限 |
 | `kick_player` | 踢出玩家 | 管理员 |
 | `ban_player` | 封禁玩家 | 管理员 |
@@ -186,10 +253,24 @@ mc security  - 查看当前安全状态
 
 ```json
 {
-  "rcon_enabled": true,
-  "rcon_host": "127.0.0.1",
-  "rcon_port": 25575,
-  "rcon_password": "your_password",
+  "default_server": "survival",
+  "mc_servers": [
+    {
+      "__template_key": "server",
+      "server_id": "survival",
+      "display_name": "生存服",
+      "rcon": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 25575,
+        "password": "your_password"
+      },
+      "message": {
+        "sync_chat_mc_to_qq": true,
+        "sync_chat_qq_to_mc": true
+      }
+    }
+  ],
   "mcsmanager_enabled": true,
   "mcsmanager_panels": [
     {
@@ -199,13 +280,8 @@ mc security  - 查看当前安全状态
       "api_key": "your_api_key"
     }
   ],
-  "websocket_enabled": false,
   "admin_ids": ["123456789", "Steve"],
-  "enable_dangerous_commands": false,
-  "sync_chat_mc_to_qq": true,
-  "sync_chat_qq_to_mc": true,
-  "mc_message_prefix": "[MC]",
-  "qq_message_prefix": "[QQ]"
+  "enable_dangerous_commands": false
 }
 ```
 
@@ -230,6 +306,13 @@ MCSManager API 合约测试和真实本地 WebSocket 通信测试。
 - 测试完成后自动销毁 Minecraft 容器，不连接任何生产服务器
 
 ## 📝 更新日志
+
+### v1.1.0
+- 🖥️ 新增命名多服务器配置，每服独立RCON、WebSocket和消息选项
+- 🔗 支持一个QQ群绑定一个或多个服务器并按来源隔离消息
+- 🎯 新增默认服务器、每用户选择和多绑定歧义保护
+- 🤖 新增服务器列表与选择LLM工具
+- ♻️ 自动兼容旧版单服配置和`default`群绑定
 
 ### v1.0.1
 - 🔒 修复危险命令斜杠、命名空间和嵌套执行绕过

@@ -86,3 +86,36 @@ class GroupBindingManager:
 
     def get_bound_groups(self, server_name: str = "default") -> List[str]:
         return self.bindings.get(server_name, [])
+
+    def get_group_servers(self, group_id: str) -> List[str]:
+        """Return every server currently associated with a group."""
+        group_id = str(group_id)
+        return [
+            server_name
+            for server_name, groups in self.bindings.items()
+            if group_id in groups
+        ]
+
+    def unbind_group_from_all(self, group_id: str) -> bool:
+        """Remove a group from every server using one atomic persistence update."""
+        self.last_error = ""
+        group_id = str(group_id)
+        previous = {server: list(groups) for server, groups in self.bindings.items()}
+        changed = False
+
+        for server_name in list(self.bindings):
+            groups = self.bindings[server_name]
+            if group_id in groups:
+                groups.remove(group_id)
+                changed = True
+            if not groups:
+                del self.bindings[server_name]
+
+        if not changed:
+            return False
+        if self._save_bindings():
+            return True
+
+        self.bindings = previous
+        self.last_error = "绑定配置保存失败，请检查 AstrBot 日志"
+        return False
