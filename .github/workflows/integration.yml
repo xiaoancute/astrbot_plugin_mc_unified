@@ -1,0 +1,89 @@
+name: Full Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_minecraft:
+        description: Start a disposable Minecraft server and verify real RCON
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  astrbot-load:
+    name: AstrBot ${{ matrix.astrbot }} load smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            astrbot: "4.10.4"
+          - python: "3.12"
+            astrbot: "4.26.7"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install AstrBot and plugin dependencies
+        run: python -m pip install "AstrBot==${{ matrix.astrbot }}" -r requirements.txt
+      - name: Import, initialize, and terminate plugin
+        run: python scripts/astrbot_load_smoke.py
+
+  minecraft-rcon:
+    name: Disposable Minecraft RCON smoke
+    if: ${{ inputs.run_minecraft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install plugin dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Start disposable Minecraft 1.21.1 server
+        run: |
+          docker run --detach --name mc-rcon-smoke \
+            --publish 127.0.0.1:25575:25575 \
+            --env EULA=TRUE \
+            --env VERSION=1.21.1 \
+            --env TYPE=VANILLA \
+            --env MEMORY=1G \
+            --env ONLINE_MODE=FALSE \
+            --env ENABLE_RCON=TRUE \
+            --env RCON_PASSWORD=ci-rcon-secret \
+            itzg/minecraft-server:java21
+      - name: Wait for Minecraft startup
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker logs mc-rcon-smoke 2>&1 | grep -q "Done"; then
+              echo "Minecraft server is ready"
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' mc-rcon-smoke)" != "true" ]; then
+              docker logs mc-rcon-smoke
+              exit 1
+            fi
+            sleep 5
+          done
+          docker logs mc-rcon-smoke
+          echo "Minecraft server did not become ready in time"
+          exit 1
+      - name: Verify real RCON commands
+        env:
+          RCON_HOST: 127.0.0.1
+          RCON_PORT: "25575"
+          RCON_PASSWORD: ci-rcon-secret
+        run: python scripts/live_rcon_smoke.py
+      - name: Show Minecraft logs
+        if: always()
+        run: docker logs --tail 200 mc-rcon-smoke || true
+      - name: Remove disposable server
+        if: always()
+        run: docker rm --force mc-rcon-smoke || true

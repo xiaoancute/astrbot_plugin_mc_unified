@@ -217,6 +217,18 @@ mc security  - 查看当前安全状态
 4. 禁用危险命令：保持 `enable_dangerous_commands` 为 `false`
 5. 防火墙配置：确保端口安全
 
+## 🧪 CI 集成测试
+
+常规 `Quality` 工作流会在 Python 3.10/3.12 下运行代码检查、单元测试、
+MCSManager API 合约测试和真实本地 WebSocket 通信测试。
+
+`Full Integration` 工作流可从 GitHub Actions 页面手动触发。它会：
+
+- 分别在 AstrBot 4.10.4 和当前支持版本下导入、初始化并卸载插件
+- 在 GitHub 托管运行器中临时启动 Minecraft 1.21.1 Docker 服务器
+- 通过真实 RCON 协议执行 `list` 和 `say` 冒烟测试
+- 测试完成后自动销毁 Minecraft 容器，不连接任何生产服务器
+
 ## 📝 更新日志
 
 ### v1.0.1

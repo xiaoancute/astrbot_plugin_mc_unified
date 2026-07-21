@@ -69,9 +69,15 @@ class RCONBackend(ServerBackend):
             try:
                 client = await self._ensure_connection()
                 response = await client.send_cmd(command)
-                # aiomcrcon 的 send_cmd 返回 Response(id, msg) NamedTuple
+                # aio-mc-rcon returns (message, request_id).
                 if hasattr(response, "msg"):
                     result = response.msg
+                elif (
+                    isinstance(response, tuple)
+                    and response
+                    and isinstance(response[0], str)
+                ):
+                    result = response[0]
                 else:
                     result = str(response)
                 logger.info(f"执行命令: {command}, 响应: {result}")

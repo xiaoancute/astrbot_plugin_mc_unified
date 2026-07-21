@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install quality dependencies
-        run: python -m pip install ruff "websockets>=12,<16"
+        run: python -m pip install ruff -r requirements.txt
       - name: Lint
         run: ruff check .
       - name: Format check

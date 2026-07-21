@@ -71,14 +71,31 @@ class CommandSafetyTests(unittest.IsolatedAsyncioTestCase):
 
 class RconResultTests(unittest.IsolatedAsyncioTestCase):
     async def test_checked_execution_reports_success(self):
-        client = types.SimpleNamespace(send_cmd=AsyncMock(return_value=(1, "online")))
+        client = types.SimpleNamespace(
+            send_cmd=AsyncMock(
+                return_value=("There are 1 of 20 players online: Steve", 1)
+            )
+        )
         backend = RCONBackend("localhost", 25575, "secret")
         backend._ensure_connection = AsyncMock(return_value=client)
 
         success, message = await backend.execute_command_checked("list")
 
         self.assertTrue(success)
-        self.assertIn("online", message)
+        self.assertEqual(message, "There are 1 of 20 players online: Steve")
+
+    async def test_online_players_parse_real_client_response(self):
+        client = types.SimpleNamespace(
+            send_cmd=AsyncMock(
+                return_value=("There are 2 of 20 players online: Alex, Steve", 1)
+            )
+        )
+        backend = RCONBackend("localhost", 25575, "secret")
+        backend._ensure_connection = AsyncMock(return_value=client)
+
+        players = await backend.get_online_players()
+
+        self.assertEqual(players, ["Alex", "Steve"])
 
     async def test_checked_execution_reports_failure_and_reconnects(self):
         client = types.SimpleNamespace(
