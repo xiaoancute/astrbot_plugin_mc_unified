@@ -24,7 +24,7 @@
 ### 🖥️ MCSManager 面板管理
 - **支持多面板管理**：可配置多个 MCSManager 面板
 - 实例控制：启动/停止/重启实例
-- 命令执行：通过 RCON 向实例发送命令
+- 命令执行：通过 MCSManager 向实例发送命令，并默认拦截 `stop`、`reload` 等危险命令
 - 日志查看：获取实例输出日志
 
 ### 🔌 多种通信方式
@@ -142,6 +142,9 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 | `mcsmanager_enabled` | 是否启用 MCSManager | `false` |
 | `mcsmanager_panels` | MCSManager 面板列表（支持多个） | `[]` |
 
+每个面板可单独设置 `enable_dangerous_commands`。保持关闭时，RCON 和该面板的
+控制台命令都会拦截 `stop`、`reload`、命名空间命令及 `execute ... run` 变体。
+
 **多面板配置示例（在 WebUI 中添加 template_list 条目）：**
 ```json
 {
@@ -150,19 +153,24 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
       "__template_key": "panel",
       "panel_name": "主面板",
       "url": "http://localhost:23333",
-      "api_key": "your_api_key_1"
+      "api_key": "your_api_key_1",
+      "enable_dangerous_commands": false
     },
     {
       "__template_key": "panel",
       "panel_name": "备用面板",
       "url": "http://192.168.1.100:23333",
-      "api_key": "your_api_key_2"
+      "api_key": "your_api_key_2",
+      "enable_dangerous_commands": false
     }
   ]
 }
 ```
 
 > 在 WebUI 中通过「添加模板」按钮即可可视化配置，无需手写 JSON。
+
+> `api_key` 的权限与生成它的 MCSManager 账户一致。实例列表接口要求管理员权限，
+> 请使用管理员账户生成的 API Key；不要把 Key 提交到仓库或发到聊天中。
 
 ### 旧版单服连接配置
 
@@ -318,7 +326,8 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
       "__template_key": "panel",
       "panel_name": "主面板",
       "url": "http://localhost:23333",
-      "api_key": "your_api_key"
+      "api_key": "your_api_key",
+      "enable_dangerous_commands": false
     }
   ],
   "admin_ids": ["123456789", "Steve"],
@@ -332,7 +341,7 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 2. FULL 操作完成后立即运行 `/mc ai-mode readonly`
 3. 在 `admin_ids` 中只填写可信用户；生产环境不要留空
 4. RCON 和 MCSManager API 使用强密码，不要写入仓库、日志或截图
-5. 保持 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
+5. 保持所有服务器/面板的 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
 
 ## 🧪 CI 集成测试
 

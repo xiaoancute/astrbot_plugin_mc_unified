@@ -574,6 +574,8 @@ class _FakePanel:
         self.name = name
         self.instances = instances
         self.stopped = []
+        self.sent_commands = []
+        self.dangerous_commands_enabled = False
 
     async def get_instances(self):
         return list(self.instances)
@@ -581,6 +583,10 @@ class _FakePanel:
     async def stop_instance(self, daemon_id, instance_uuid):
         self.stopped.append((daemon_id, instance_uuid))
         return True
+
+    async def send_command_to_instance(self, daemon_id, instance_uuid, command):
+        self.sent_commands.append((daemon_id, instance_uuid, command))
+        return "ok"
 
 
 class _FakeMultiBackend:
@@ -636,6 +642,24 @@ class MCSManagerTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("backup", result)
         self.assertEqual(primary.stopped, [])
         self.assertEqual(backup.stopped, [("daemon-backup", "uuid-2")])
+
+    async def test_mcsmanager_dangerous_commands_follow_panel_policy(self):
+        primary = _FakePanel("primary", [_instance("survival", "uuid-1", "primary")])
+        tools = MCSManagerTools(_FakeMultiBackend([primary]))
+
+        result = await tools.send_command("survival", "/minecraft:stop", "primary")
+
+        self.assertIn("危险命令", result)
+        self.assertEqual(primary.sent_commands, [])
+
+        primary.dangerous_commands_enabled = True
+        result = await tools.send_command("survival", "say hello", "primary")
+
+        self.assertIn("命令已发送", result)
+        self.assertEqual(
+            primary.sent_commands,
+            [("daemon-primary", "uuid-1", "say hello")],
+        )
 
 
 class WebSocketTests(unittest.IsolatedAsyncioTestCase):

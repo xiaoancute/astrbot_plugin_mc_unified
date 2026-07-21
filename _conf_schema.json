@@ -205,8 +205,14 @@
           "api_key": {
             "type": "string",
             "description": "API密钥",
-            "hint": "MCSManager面板的API密钥",
+            "hint": "MCSManager面板的API密钥；实例列表接口需要具备管理员权限的API密钥",
             "default": ""
+          },
+          "enable_dangerous_commands": {
+            "type": "bool",
+            "description": "允许控制台危险命令",
+            "hint": "是否允许通过此面板发送stop、reload等危险命令，默认关闭",
+            "default": false
           }
         }
       }

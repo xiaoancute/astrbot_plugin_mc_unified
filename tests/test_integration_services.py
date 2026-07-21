@@ -41,18 +41,40 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
             if request.url.path == "/api/service/remote_service_instances":
+                self.assertEqual(request.url.params["instance_name"], "")
+                self.assertEqual(request.url.params["status"], "")
+                self.assertEqual(request.url.params["page_size"], "50")
+                page = request.url.params["page"]
+                if page == "2":
+                    return httpx.Response(
+                        200,
+                        json={
+                            "status": 200,
+                            "data": {
+                                "maxPage": 2,
+                                "data": [
+                                    {
+                                        "config": {"nickname": "creative"},
+                                        "instanceUuid": "instance-2",
+                                        "status": 3,
+                                    }
+                                ],
+                            },
+                        },
+                    )
                 return httpx.Response(
                     200,
                     json={
                         "status": 200,
                         "data": {
+                            "maxPage": 2,
                             "data": [
                                 {
                                     "config": {"nickname": "survival"},
                                     "instanceUuid": "instance-1",
-                                    "status": 3,
+                                    "status": 0,
                                 }
-                            ]
+                            ],
                         },
                     },
                 )
@@ -72,10 +94,42 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
             await backend.terminate()
 
         self.assertEqual(overview["remote"][0]["uuid"], "daemon-1")
-        self.assertEqual(instances[0]["name"], "survival")
+        self.assertEqual(
+            [instance["name"] for instance in instances], ["creative", "survival"]
+        )
+        self.assertEqual(instances[1]["status"], 0)
         self.assertEqual(instances[0]["panel_name"], "primary")
         self.assertTrue(started)
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 5)
+
+    async def test_command_and_log_requests_use_documented_size_and_headers(self):
+        requests = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            self.assertEqual(request.headers["X-Requested-With"], "XMLHttpRequest")
+            self.assertIn("application/json", request.headers["Content-Type"])
+            if request.url.path.endswith("/command"):
+                self.assertEqual(request.url.params["command"], "say hello")
+                return httpx.Response(200, json={"status": 200, "data": True})
+            if request.url.path.endswith("/outputlog"):
+                self.assertEqual(request.url.params["size"], "64")
+                return httpx.Response(200, json={"status": 200, "data": "ok\n"})
+            return httpx.Response(404, json={"status": 404})
+
+        backend = MCSManagerBackend("primary", "http://mcsmanager.test", "test-key")
+        await backend.http_client.aclose()
+        backend.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            result = await backend.send_command_to_instance(
+                "daemon-1", "instance-1", "say hello"
+            )
+        finally:
+            await backend.terminate()
+
+        self.assertEqual(result, "ok\n")
+        self.assertEqual(len(requests), 2)
 
 
 class WebSocketContractTests(unittest.IsolatedAsyncioTestCase):

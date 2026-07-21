@@ -5,10 +5,17 @@ from astrbot.api import logger
 
 
 class MCSManagerBackend:
-    def __init__(self, name: str, base_url: str, api_key: str):
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        api_key: str,
+        dangerous_commands_enabled: bool = False,
+    ):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.dangerous_commands_enabled = bool(dangerous_commands_enabled)
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
     async def _make_request(
@@ -81,35 +88,56 @@ class MCSManagerBackend:
 
         for node in nodes:
             node_uuid = node.get("uuid")
-            instances_resp = await self._make_request(
-                "/service/remote_service_instances",
-                params={"daemonId": node_uuid, "page": 1, "page_size": 100},
-            )
-
-            if instances_resp.get("status") != 200:
-                continue
-
-            data_block = instances_resp.get("data", {})
-            instances = (
-                data_block.get("data", [])
-                if isinstance(data_block, dict)
-                else data_block
-            )
-
-            for instance in instances:
-                all_instances.append(
-                    {
-                        "name": instance.get("config", {}).get("nickname") or "未命名",
-                        "uuid": instance.get("instanceUuid"),
-                        "daemon_id": node_uuid,
-                        "status": instance.get("status")
-                        or instance.get("info", {}).get("status"),
-                        "node_name": node.get("remarks")
-                        or node.get("hostname")
-                        or "未知节点",
-                        "panel_name": self.name,
-                    }
+            page = 1
+            while True:
+                instances_resp = await self._make_request(
+                    "/service/remote_service_instances",
+                    params={
+                        "daemonId": node_uuid,
+                        "page": page,
+                        "page_size": 50,
+                        "instance_name": "",
+                        "status": "",
+                    },
                 )
+
+                if instances_resp.get("status") != 200:
+                    break
+
+                data_block = instances_resp.get("data", {})
+                instances = (
+                    data_block.get("data", [])
+                    if isinstance(data_block, dict)
+                    else data_block
+                )
+
+                for instance in instances:
+                    status = instance.get("status")
+                    if status is None:
+                        status = instance.get("info", {}).get("status")
+                    all_instances.append(
+                        {
+                            "name": instance.get("config", {}).get("nickname")
+                            or "未命名",
+                            "uuid": instance.get("instanceUuid"),
+                            "daemon_id": node_uuid,
+                            "status": status,
+                            "node_name": node.get("remarks")
+                            or node.get("hostname")
+                            or "未知节点",
+                            "panel_name": self.name,
+                        }
+                    )
+
+                if not isinstance(data_block, dict):
+                    break
+                try:
+                    max_page = max(1, int(data_block.get("maxPage", page)))
+                except (TypeError, ValueError):
+                    max_page = page
+                if page >= max_page:
+                    break
+                page += 1
 
         all_instances.sort(key=lambda x: x["name"])
         return all_instances
@@ -153,7 +181,7 @@ class MCSManagerBackend:
         log_resp = await self._make_request(
             "/protected_instance/outputlog",
             method="GET",
-            params={"daemonId": daemon_id, "uuid": instance_uuid},
+            params={"daemonId": daemon_id, "uuid": instance_uuid, "size": 64},
         )
         return (
             log_resp.get("data", "无返回数据")
@@ -164,10 +192,16 @@ class MCSManagerBackend:
     async def get_instance_log(
         self, daemon_id: str, instance_uuid: str, size: int = 100
     ) -> str:
+        max_lines = max(1, int(size))
+        request_size_kb = min(2048, max_lines)
         resp = await self._make_request(
             "/protected_instance/outputlog",
             method="GET",
-            params={"daemonId": daemon_id, "uuid": instance_uuid},
+            params={
+                "daemonId": daemon_id,
+                "uuid": instance_uuid,
+                "size": request_size_kb,
+            },
         )
         if resp.get("status") != 200:
             return f"获取日志失败: {resp.get('error', '未知错误')}"
@@ -177,8 +211,8 @@ class MCSManagerBackend:
             return "该实例当前没有最新日志"
 
         lines = log_data.strip().split("\n")
-        if len(lines) > size:
-            lines = lines[-size:]
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
 
         return "\n".join(lines)
 
@@ -191,8 +225,16 @@ class MCSManagerMultiBackend:
     def __init__(self):
         self.backends: Dict[str, MCSManagerBackend] = {}
 
-    def add_backend(self, name: str, url: str, api_key: str):
-        self.backends[name] = MCSManagerBackend(name, url, api_key)
+    def add_backend(
+        self,
+        name: str,
+        url: str,
+        api_key: str,
+        dangerous_commands_enabled: bool = False,
+    ):
+        self.backends[name] = MCSManagerBackend(
+            name, url, api_key, dangerous_commands_enabled
+        )
         logger.info(f"MCSManager面板 [{name}] 已添加")
 
     def remove_backend(self, name: str):

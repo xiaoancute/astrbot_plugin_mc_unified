@@ -138,7 +138,13 @@ class MCUnifiedPlugin(Star):
                     url = panel.get("url", "")
                     api_key = panel.get("api_key", "")
                     if name and url and api_key:
-                        self.mcsmanager_multi_backend.add_backend(name, url, api_key)
+                        dangerous_commands_enabled = panel.get(
+                            "enable_dangerous_commands",
+                            self.config.get("enable_dangerous_commands", False),
+                        )
+                        self.mcsmanager_multi_backend.add_backend(
+                            name, url, api_key, dangerous_commands_enabled
+                        )
                 logger.info(f"MCSManager多面板后端已初始化，共 {len(panels)} 个面板")
 
     def _init_tools(self):

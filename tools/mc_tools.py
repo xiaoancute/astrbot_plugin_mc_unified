@@ -1,7 +1,8 @@
+from .command_safety import find_dangerous_command
+
+
 class MinecraftTools:
     """Minecraft服务器管理工具集"""
-
-    DANGEROUS_COMMANDS = {"stop", "reload"}
 
     def __init__(self, rcon_backend):
         self.rcon = rcon_backend
@@ -9,29 +10,6 @@ class MinecraftTools:
 
     def set_dangerous_commands_enabled(self, enabled: bool):
         self.dangerous_commands_enabled = enabled
-
-    @staticmethod
-    def _command_name(token: str) -> str:
-        """Normalize a command token for safety checks."""
-        token = token.lstrip("/").lower()
-        return token.rsplit(":", 1)[-1]
-
-    def _find_dangerous_command(self, command: str) -> str | None:
-        tokens = command.strip().split()
-        if not tokens:
-            return None
-
-        candidate_indexes = {0}
-        candidate_indexes.update(
-            index + 1
-            for index, token in enumerate(tokens[:-1])
-            if self._command_name(token) == "run"
-        )
-        for index in candidate_indexes:
-            command_name = self._command_name(tokens[index])
-            if command_name in self.DANGEROUS_COMMANDS:
-                return command_name
-        return None
 
     async def list_players(self) -> str:
         result = await self.rcon.execute_command("list")
@@ -152,7 +130,7 @@ class MinecraftTools:
             return "错误: 命令不能为空"
 
         if not self.dangerous_commands_enabled:
-            dangerous_command = self._find_dangerous_command(command)
+            dangerous_command = find_dangerous_command(command)
             if dangerous_command:
                 return (
                     f"错误: 命令 '{dangerous_command}' 被标记为危险命令，"

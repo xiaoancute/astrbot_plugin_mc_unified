@@ -1,6 +1,8 @@
 import json
 from typing import Dict, Any
 
+from .command_safety import find_dangerous_command
+
 
 class MCSManagerTools:
     """MCSManager面板管理工具集（支持多面板）"""
@@ -116,6 +118,14 @@ class MCSManagerTools:
         backend = self.multi_backend.get_backend(panel_name)
         if not backend:
             return f"找不到实例所属的面板: {panel_name}"
+
+        if not getattr(backend, "dangerous_commands_enabled", False):
+            dangerous_command = find_dangerous_command(command)
+            if dangerous_command:
+                return (
+                    f"错误: 命令 '{dangerous_command}' 被标记为危险命令，"
+                    f"请在MCSManager面板 {panel_name} 的配置中显式启用危险命令"
+                )
 
         result = await backend.send_command_to_instance(
             instance["daemon_id"], instance["uuid"], command
