@@ -145,7 +145,8 @@ class ServerRegistry:
         self.default_server_id = str(default_server_id or "").strip()
 
     def add(self, profile: ServerProfile) -> bool:
-        if profile.server_id in self.profiles:
+        folded_id = profile.server_id.casefold()
+        if any(server_id.casefold() == folded_id for server_id in self.profiles):
             return False
         self.profiles[profile.server_id] = profile
         return True

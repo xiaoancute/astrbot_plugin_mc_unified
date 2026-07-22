@@ -20,8 +20,21 @@ class MCSManagerTools:
     def get_panel_list(self) -> str:
         panels = self.multi_backend.get_backend_names()
         if not panels:
-            return "暂无可用的MCSManager面板"
-        return "可用面板: " + ", ".join(panels)
+            return "暂无已配置的MCSManager面板"
+        return "已配置面板（仅表示配置存在，不代表连接成功）: " + ", ".join(panels)
+
+    @staticmethod
+    def _request_failure(action: str, error: Exception) -> str:
+        return f"❌ {action}失败: {error}"
+
+    async def _get_all_instances_report(self) -> tuple[list, list[str]]:
+        report_method = getattr(self.multi_backend, "get_all_instances_report", None)
+        if callable(report_method):
+            return await report_method()
+        try:
+            return await self.multi_backend.get_all_instances(), []
+        except Exception as error:
+            return [], [str(error)]
 
     async def get_overview(self, panel_name: str = None) -> str:
         backend = self.multi_backend.get_backend(panel_name) if panel_name else None
@@ -30,7 +43,10 @@ class MCSManagerTools:
             backend = backends[0] if backends else None
         if not backend:
             return f"找不到面板: {panel_name or '当前面板'}"
-        data = await backend.get_overview()
+        try:
+            data = await backend.get_overview()
+        except Exception as error:
+            return self._request_failure(f"[{backend.name}] 获取面板概览", error)
         return f"📊 [{backend.name}] 概览:\n{json.dumps(data, ensure_ascii=False, indent=2)}"
 
     async def get_instances(self, panel_name: str = None) -> str:
@@ -38,12 +54,20 @@ class MCSManagerTools:
             backend = self.multi_backend.get_backend(panel_name)
             if not backend:
                 return f"找不到面板: {panel_name}"
-            instances = await backend.get_instances()
+            try:
+                instances = await backend.get_instances()
+            except Exception as error:
+                return self._request_failure(f"[{backend.name}] 获取实例列表", error)
             prefix = f"[{backend.name}] "
+            query_errors = []
         else:
-            instances = await self.multi_backend.get_all_instances()
+            instances, query_errors = await self._get_all_instances_report()
             prefix = ""
 
+        if query_errors and not instances:
+            lines = ["❌ 无法获取MCSManager实例列表:"]
+            lines.extend(f"- {error}" for error in query_errors)
+            return "\n".join(lines)
         if not instances:
             return f"🖥️ {prefix}实例列表为空"
 
@@ -62,6 +86,9 @@ class MCSManagerTools:
                 f"UUID: {instance['uuid']}\n"
             )
 
+        if query_errors:
+            result += "⚠️ 部分面板查询失败:\n"
+            result += "\n".join(f"- {error}" for error in query_errors)
         return result
 
     async def start_instance(self, identifier: str, panel_name: str = None) -> str:
@@ -74,7 +101,12 @@ class MCSManagerTools:
         if not backend:
             return f"找不到实例所属的面板: {panel_name}"
 
-        success = await backend.start_instance(instance["daemon_id"], instance["uuid"])
+        try:
+            success = await backend.start_instance(
+                instance["daemon_id"], instance["uuid"]
+            )
+        except Exception as error:
+            return self._request_failure(f"[{panel_name}] 启动实例", error)
         if success:
             return f"✅ [{panel_name}] 正在启动实例: {instance['name']}"
         return f"❌ [{panel_name}] 启动实例失败: {instance['name']}"
@@ -89,7 +121,12 @@ class MCSManagerTools:
         if not backend:
             return f"找不到实例所属的面板: {panel_name}"
 
-        success = await backend.stop_instance(instance["daemon_id"], instance["uuid"])
+        try:
+            success = await backend.stop_instance(
+                instance["daemon_id"], instance["uuid"]
+            )
+        except Exception as error:
+            return self._request_failure(f"[{panel_name}] 停止实例", error)
         if success:
             return f"✅ [{panel_name}] 正在停止实例: {instance['name']}"
         return f"❌ [{panel_name}] 停止实例失败: {instance['name']}"
@@ -104,9 +141,12 @@ class MCSManagerTools:
         if not backend:
             return f"找不到实例所属的面板: {panel_name}"
 
-        success = await backend.restart_instance(
-            instance["daemon_id"], instance["uuid"]
-        )
+        try:
+            success = await backend.restart_instance(
+                instance["daemon_id"], instance["uuid"]
+            )
+        except Exception as error:
+            return self._request_failure(f"[{panel_name}] 重启实例", error)
         if success:
             return f"✅ [{panel_name}] 正在重启实例: {instance['name']}"
         return f"❌ [{panel_name}] 重启实例失败: {instance['name']}"
@@ -114,6 +154,15 @@ class MCSManagerTools:
     async def send_command(
         self, identifier: str, command: str, panel_name: str = None
     ) -> str:
+        command = str(command or "").strip()
+        if not command:
+            return "错误: 命令不能为空"
+        if any(character in command for character in "\x00\r\n"):
+            return "错误: 命令不能包含 NUL 或换行符"
+        command = command.removeprefix("/").lstrip()
+        if not command:
+            return "错误: 命令不能为空"
+
         instance, error = await self._resolve_instance(identifier, panel_name)
         if not instance:
             return error
@@ -131,9 +180,12 @@ class MCSManagerTools:
                     f"请在MCSManager面板 {panel_name} 的配置中显式启用危险命令"
                 )
 
-        result = await backend.send_command_to_instance(
-            instance["daemon_id"], instance["uuid"], command
-        )
+        try:
+            result = await backend.send_command_to_instance(
+                instance["daemon_id"], instance["uuid"], command
+            )
+        except Exception as error:
+            return self._request_failure(f"[{panel_name}] 发送命令", error)
         return f"📢 [{panel_name}] 命令已发送到 {instance['name']}:\n{result}"
 
     async def get_instance_log(
@@ -148,9 +200,12 @@ class MCSManagerTools:
         if not backend:
             return f"找不到实例所属的面板: {panel_name}"
 
-        log = await backend.get_instance_log(
-            instance["daemon_id"], instance["uuid"], size
-        )
+        try:
+            log = await backend.get_instance_log(
+                instance["daemon_id"], instance["uuid"], size
+            )
+        except Exception as error:
+            return self._request_failure(f"[{panel_name}] 获取实例日志", error)
         return f"📝 [{panel_name}] {instance['name']} 最近日志:\n{log}"
 
     @staticmethod
@@ -187,12 +242,16 @@ class MCSManagerTools:
         if isinstance(data, list):
             return data, requested_page, 1
         if not isinstance(data, dict):
-            return [], requested_page, 1
-        entries = data.get(
-            "items", data.get("data", data.get("files", data.get("list", [])))
+            raise ValueError("目录响应格式错误：data不是对象或列表")
+        entry_key = next(
+            (key for key in ("items", "data", "files", "list") if key in data),
+            None,
         )
+        if entry_key is None:
+            raise ValueError("目录响应格式错误：data缺少文件列表字段")
+        entries = data[entry_key]
         if not isinstance(entries, list):
-            entries = []
+            raise ValueError(f"目录响应格式错误：{entry_key}不是列表")
 
         if "total" in data or "pageSize" in data or "page" in data:
             try:
@@ -260,18 +319,24 @@ class MCSManagerTools:
         backend = self.multi_backend.get_backend(instance.get("panel_name"))
         if not backend:
             return f"找不到实例所属的面板: {instance.get('panel_name')}"
-        response = await backend.list_files(
-            instance["daemon_id"],
-            instance["uuid"],
-            normalized_target,
-            page - 1,
-            page_size,
-            str(file_name or "").strip(),
-        )
+        try:
+            response = await backend.list_files(
+                instance["daemon_id"],
+                instance["uuid"],
+                normalized_target,
+                page - 1,
+                page_size,
+                str(file_name or "").strip(),
+            )
+        except Exception as error:
+            return self._request_failure(f"[{backend.name}] 读取目录", error)
         failure = self._file_error(response, "读取目录")
         if failure:
             return failure
-        entries, current_page, max_page = self._extract_file_entries(response, page)
+        try:
+            entries, current_page, max_page = self._extract_file_entries(response, page)
+        except ValueError as error:
+            return self._request_failure(f"[{backend.name}] 读取目录", error)
         heading = f"📁 [{backend.name}] {instance['name']} {normalized_target} 文件列表"
         if not entries:
             return f"{heading}（第 {current_page}/{max_page} 页）\n（目录为空）"
@@ -299,15 +364,26 @@ class MCSManagerTools:
         backend = self.multi_backend.get_backend(instance.get("panel_name"))
         if not backend:
             return f"找不到实例所属的面板: {instance.get('panel_name')}"
-        response = await backend.read_file(
-            instance["daemon_id"], instance["uuid"], normalized_target
-        )
+        try:
+            response = await backend.read_file(
+                instance["daemon_id"], instance["uuid"], normalized_target
+            )
+        except Exception as error:
+            return self._request_failure(f"[{backend.name}] 读取文件", error)
         failure = self._file_error(response, "读取文件")
         if failure:
             return failure
         data = response.get("data", "")
         if isinstance(data, dict):
-            content = data.get("content", data.get("text", data.get("data", "")))
+            content_key = next(
+                (key for key in ("content", "text", "data") if key in data), None
+            )
+            if content_key is None:
+                return self._request_failure(
+                    f"[{backend.name}] 读取文件",
+                    ValueError("文件响应格式错误：data缺少内容字段"),
+                )
+            content = data[content_key]
         else:
             content = data
         if content is None:
@@ -324,15 +400,6 @@ class MCSManagerTools:
             content = content[:limit]
         notice = f"\n\n⚠️ 内容已截断，仅显示前 {limit} 个字符。" if truncated else ""
         return f"📄 [{backend.name}] {instance['name']} {normalized_target}:\n{content}{notice}"
-
-    async def write_file(self, identifier: str, target: str, text: str) -> str:
-        return "文件管理功能暂未实现"
-
-    async def delete_files(self, identifier: str, targets: list) -> str:
-        return "文件管理功能暂未实现"
-
-    async def create_folder(self, identifier: str, target: str) -> str:
-        return "文件管理功能暂未实现"
 
     async def _resolve_instance(
         self, identifier: str, panel_name: str = None
@@ -352,9 +419,21 @@ class MCSManagerTools:
             backend = self.multi_backend.get_backend(panel_name)
             if not backend:
                 return None, f"找不到面板: {panel_name}"
-            instances = await backend.get_instances()
+            try:
+                instances = await backend.get_instances()
+            except Exception as error:
+                return None, self._request_failure(f"[{backend.name}] 查询实例", error)
+            query_errors = []
         else:
-            instances = await self.multi_backend.get_all_instances()
+            instances, query_errors = await self._get_all_instances_report()
+
+        if query_errors:
+            return (
+                None,
+                "❌ 部分MCSManager面板查询失败，无法安全解析实例目标。"
+                "请先选择或明确指定面板后重试:\n"
+                + "\n".join(f"- {error}" for error in query_errors),
+            )
 
         if not instances:
             return None, f"找不到实例: {identifier}"
@@ -391,4 +470,9 @@ class MCSManagerTools:
                 "请指定 panel_name 或使用 UUID",
             )
 
-        return None, f"找不到实例: {identifier}"
+        suffix = ""
+        if query_errors:
+            suffix = "\n⚠️ 另有面板查询失败:\n" + "\n".join(
+                f"- {error}" for error in query_errors
+            )
+        return None, f"找不到实例: {identifier}{suffix}"

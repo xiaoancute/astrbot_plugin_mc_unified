@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import List, Optional
 
 from aiomcrcon import Client
@@ -16,6 +17,7 @@ class RCONBackend(ServerBackend):
         self.password = password
         self._client: Optional[Client] = None
         self._lock = asyncio.Lock()
+        self._command_lock = asyncio.Lock()
 
     async def _ensure_connection(self) -> Client:
         async with self._lock:
@@ -47,20 +49,25 @@ class RCONBackend(ServerBackend):
             return False
 
     async def disconnect(self):
-        async with self._lock:
-            if self._client:
-                try:
-                    await self._client.close()
-                    logger.info("RCON连接已关闭")
-                except Exception:
-                    pass
-                self._client = None
+        async with self._command_lock:
+            async with self._lock:
+                if self._client:
+                    try:
+                        await self._client.close()
+                        logger.info("RCON连接已关闭")
+                    except Exception:
+                        pass
+                    self._client = None
 
     async def is_connected(self) -> bool:
         return self._client is not None
 
     async def execute_command_checked(self, command: str) -> tuple[bool, str]:
         """Execute a command and return an explicit success flag."""
+        async with self._command_lock:
+            return await self._execute_command_checked_locked(command)
+
+    async def _execute_command_checked_locked(self, command: str) -> tuple[bool, str]:
         if command.startswith("/"):
             command = command[1:]
 
@@ -122,7 +129,17 @@ class RCONBackend(ServerBackend):
             return []
 
     async def send_message(self, message: str, target: str = "@a") -> str:
-        escaped = message.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        json_text = f'{{"text":"{escaped}", "color":"aqua"}}'
+        target = str(target or "").strip()
+        if (
+            not target
+            or "\x00" in target
+            or any(character.isspace() for character in target)
+        ):
+            return "错误: 目标选择器格式无效"
+        json_text = json.dumps(
+            {"text": str(message), "color": "aqua"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         command = f"tellraw {target} {json_text}"
         return await self.execute_command(command)

@@ -1,358 +1,247 @@
-# MC Unified 插件
+# MC Unified
 
-一个统一的 Minecraft 管理插件，整合了多个 AstrBot 插件的核心功能，支持 RCON、WebSocket、MCSManager 等多种管理方式。
+统一的 Minecraft 管理插件，集成多服务器 RCON、MCSManager 面板、QQ↔MC 消息互通和 LLM 自然语言管理。
 
-## ✨ 功能特性
+## 功能一览
 
-### 🖥️ 统一多服务器管理
-- 在一个AstrBot插件中配置和管理多台独立Minecraft服务器
-- 查询全部服务器连接状态和在线玩家，或明确指定一台服务器操作
-- 所有管理工具支持服务器ID；未指定时使用当前选择或默认服务器
-- 群绑定不是管理前置条件，只用于可选的QQ↔MC消息转发
+| 功能 | 说明 |
+|------|------|
+| 多服务器管理 | 一台 AstrBot 管理多台 MC 服务器，各自独立 RCON/WebSocket 配置 |
+| QQ↔MC 消息互通 | 多对多群服绑定，聊天/事件双向转发 |
+| MCSManager 面板 | 多面板管理，实例启停/命令/日志/文件浏览 |
+| LLM 自然语言 | 默认只读，管理员可明确开启 FULL 模式执行写操作 |
+| 安全控制 | 管理员白名单、速率限制、操作日志、危险命令拦截 |
 
-### 🤖 LLM 自然语言管理
-- 默认 `READONLY`：自然语言只能查询服务器、玩家、日志和目标信息
-- 写操作必须同时满足全局 `FULL` 模式和请求者位于 `admin_ids`
-- 模型只能说明如何申请 FULL，不能通过工具或自然语言自行提权
-- 支持玩家、世界、服务器及 MCSManager 操作，并保留速率限制和审计日志
+## 安装
 
-### 🔄 QQ ↔ MC 消息互通
-- MC 聊天消息同步到绑定的 QQ 群
-- QQ 群消息同步到 MC 服务器
-- 玩家加入/退出/死亡事件自动推送
+1. 下载 Release ZIP，将插件文件夹放入 AstrBot 的 `data/plugins/` 目录
+2. 重启 AstrBot，在 WebUI 的插件管理中配置
 
-### 🖥️ MCSManager 面板管理
-- **支持多面板管理**：可配置多个 MCSManager 面板
-- 实例控制：启动/停止/重启实例
-- 命令执行：通过 MCSManager 向实例发送命令，并默认拦截 `stop`、`reload` 等危险命令
-- 日志查看：获取实例输出日志
+升级手工安装版本时，确认 `data/plugins/` 下只保留一个插件目录；不要同时留下旧的 `mc_unified/` 和新的 `astrbot_plugin_mc_unified/`，否则 AstrBot 可能重复加载。
 
-### 🔌 多种通信方式
-- **RCON**：直接管理 MC 服务器（无需安装额外模组）
-- **WebSocket**：支持鹊桥模组（Queqiao）
-- **MCSManager API**：管理面板上的实例
+## 配置
 
-### 🔒 安全特性
-- **强制权限控制**：管理员列表为空时，所有写操作自动禁用
-- **最小权限默认值**：LLM 默认只能读取，写操作需要管理员明确开启 FULL
-- **防止模型自行提权**：自然语言工具只能返回状态和人工确认指令
-- **速率限制**：每分钟最多 10 次操作，防止滥用
-- **操作日志**：记录权限判定和操作请求，方便审计
+所有配置项在 AstrBot WebUI 的插件配置页面完成，无需手动编辑 JSON。
 
-## 📦 安装
-
-### 方法一：手动安装
-
-1. 从 GitHub Release 下载 ZIP，并将其中的 `astrbot_plugin_mc_unified` 文件夹放置到 AstrBot 的 `data/plugins/` 目录
-2. 重启 AstrBot
-
-### 插件市场
-
-本项目目前尚未收录到 AstrBot 官方插件市场，请暂时使用 GitHub Release 安装。
-
-## ⚙️ 配置
-
-在 AstrBot 管理面板中配置本插件：
-
-WebUI 以服务器为中心配置。每张 `mc_servers` 卡片依次填写：
-
-1. 服务器ID和显示名称。
-2. 此服务器绑定的一个或多个QQ群号。
-3. RCON、WebSocket连接及 MC→QQ、QQ→MC 等消息方向。
-
-同一个群号可以填写到多台服务器卡片中，因此一个服务器可对应多个群，
-一个群也可对应多台服务器，不需要在另一张表里重复填写服务器ID。
-
-管理命令始终按明确的服务器 ID、当前选择、默认服务器解析，不会因为QQ群绑定而改变目标。
-
-### 多服务器配置
-
-使用 `mc_servers` 添加命名服务器，每个条目均可独立设置：
-
-- 服务器ID和显示名称
-- 此服务器接收和发送消息的QQ群号列表
-- RCON地址、端口、密码及危险命令开关
-- WebSocket/鹊桥地址和令牌
-- MC→QQ、QQ→MC、玩家事件同步开关
-- 消息发送方式及带服务器名称占位符的前缀
-
-`default_server` 指定未明确传入服务器时的默认目标。管理服务器不需要绑定QQ群：
-可以直接说“查看全部服务器玩家”“重启 server-2”或调用带 `server_name` 的工具。
-
-```json
-{
-  "default_server": "survival",
-  "mc_servers": [
-    {
-      "__template_key": "server",
-      "enabled": true,
-      "server_id": "survival",
-      "display_name": "生存服",
-      "qq_group_ids": ["10001", "10002"],
-      "enable_dangerous_commands": false,
-      "rcon": {
-        "enabled": true,
-        "host": "10.0.0.10",
-        "port": 25575,
-        "password": "your_rcon_password"
-      },
-      "websocket": {
-        "enabled": true,
-        "url": "ws://10.0.0.10:8080/minecraft/ws",
-        "token": "your_websocket_token"
-      },
-      "message": {
-        "sync_chat_mc_to_qq": true,
-        "sync_chat_qq_to_mc": true,
-        "forward_llm_responses_to_mc": false,
-        "forward_player_events": true,
-        "transport": "auto",
-        "mc_message_prefix": "[MC:{server}]",
-        "qq_message_prefix": "[QQ]"
-      }
-    },
-    {
-      "__template_key": "server",
-      "enabled": true,
-      "server_id": "creative",
-      "display_name": "创造服",
-      "qq_group_ids": ["10001"],
-      "rcon": {
-        "enabled": true,
-        "host": "10.0.0.11",
-        "port": 25575,
-        "password": "another_password"
-      },
-      "websocket": {"enabled": false},
-      "message": {
-        "sync_chat_mc_to_qq": false,
-        "sync_chat_qq_to_mc": true,
-        "transport": "rcon"
-      }
-    }
-  ]
-}
-```
-
-> 未添加 `mc_servers` 时，插件会自动把旧版全局 RCON/WebSocket配置作为
-> `default` 服务器加载，现有单服用户无需立刻迁移。为了避免新配置界面同时出现两套
-> 重复逻辑，旧版字段已在WebUI隐藏；需要修改连接信息时请迁移到 `mc_servers`。
-
-### 可选：QQ群消息互通
-
-只有需要聊天转发时，才在对应服务器卡片中填写 `qq_group_ids` 并开启消息方向。
-绑定是明确的多对多关系，仅决定消息流向，不影响管理命令选择：
-
-- MC→QQ：服务器聊天发送到绑定了该服务器的群
-- QQ→MC：群消息发送到该群绑定且开启同步的服务器
-- 一个服务器可以对应一个或多个群
-- 一个群也可以绑定一台或多台服务器；绑定多台时消息会分别转发
-- `forward_llm_responses_to_mc` 决定是否把该群中的最终 AI 回复发回对应服务器，默认关闭
-
-例如：群 `10001` 同时连接生存服和创造服，而生存服还连接群 `10002`：
-
-```json
-{
-  "mc_servers": [
-    {
-      "__template_key": "server",
-      "server_id": "survival",
-      "qq_group_ids": ["10001", "10002"]
-    },
-    {
-      "__template_key": "server",
-      "server_id": "creative",
-      "qq_group_ids": ["10001"]
-    }
-  ]
-}
-```
-
-WebUI 配置的绑定由对应服务器卡片管理；群内 `/mc bind` 添加的绑定保存在插件数据中。
-两种来源会合并生效，`/mc bindings all` 会标注每条绑定来自 `WebUI` 还是 `指令`。
-`/mc unbind` 只能删除指令绑定，不能暗中覆盖 WebUI 配置。
-
-从早期分组式配置升级时，插件会把旧 `qq_group_bindings` 中仍然有效的绑定自动复制到
-对应服务器的 `qq_group_ids` 并保存配置；停用、不完整或引用不存在服务器的条目会原样保留并记录警告。
-
-升级后，旧绑定群需要先发送一条新群消息，或重新执行一次 `/mc bind`，插件才能记录
-AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造会话地址。
-
-### MCSManager 配置
+### 全局设置
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `mcsmanager_enabled` | 是否启用 MCSManager | `false` |
-| `mcsmanager_panels` | MCSManager 面板列表（支持多个） | `[]` |
+| **管理员ID列表** | 允许使用管理功能的用户ID（QQ号）。留空则所有写操作禁用 | `[]` |
+| **AI管理权限模式** | `readonly`（LLM只能查询）或 `full`（LLM可执行写操作） | `readonly` |
+| **默认服务器ID** | 未指定服务器时的默认操作目标。留空则使用列表第一项 | `""` |
 
-每个面板可单独设置 `enable_dangerous_commands`。保持关闭时，RCON 和该面板的
-控制台命令都会拦截 `stop`、`reload`、命名空间命令及 `execute ... run` 变体。
+### Minecraft 服务器列表
 
-**多面板配置示例（在 WebUI 中添加 template_list 条目）：**
-```json
-{
-  "mcsmanager_panels": [
-    {
-      "__template_key": "panel",
-      "panel_name": "主面板",
-      "url": "http://localhost:23333",
-      "api_key": "your_api_key_1",
-      "enable_dangerous_commands": false
-    },
-    {
-      "__template_key": "panel",
-      "panel_name": "备用面板",
-      "url": "http://192.168.1.100:23333",
-      "api_key": "your_api_key_2",
-      "enable_dangerous_commands": false
-    }
-  ]
-}
-```
+每张卡片代表一台服务器，包含：
 
-> 在 WebUI 中通过「添加模板」按钮即可可视化配置，无需手写 JSON。
+- **服务器ID** — 唯一标识，用于命令和 LLM 工具（如 `survival`、`creative`）
+- **显示名称** — 消息中展示的名称
+- **QQ群号** — 绑定的群列表，同一群号可填入多台服务器实现多对多
+- **RCON** — 地址、端口、密码
+- **WebSocket** — 鹊桥模组地址和令牌
+- **消息互通** — MC→QQ、QQ→MC、玩家事件、LLM回复转发开关，前缀模板支持 `{server}` 占位符
+- **自定义指令** — 管理员预配置固定命令模板和参数占位符
 
-> `api_key` 的权限与生成它的 MCSManager 账户一致。实例列表接口要求管理员权限，
-> 请使用管理员账户生成的 API Key；不要把 Key 提交到仓库或发到聊天中。
+### MCSManager 面板列表
 
-### 旧版单服连接配置（兼容读取，WebUI已隐藏）
+添加面板后管理功能自动启用，无需额外开关。每张面板卡片包含：
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `rcon_enabled` / `rcon_host` / `rcon_port` / `rcon_password` | 旧版单服RCON | - |
-| `websocket_enabled` | 是否启用 WebSocket | `false` |
-| `websocket_url` | WebSocket 地址 | `ws://127.0.0.1:8080/minecraft/ws` |
-| `websocket_token` | 认证令牌 | - |
+| 面板名称 | 标识名称，区分不同面板 | `""` |
+| 面板地址 | MCSManager Web 地址 | `""` |
+| API密钥 | 管理员账户生成的 API Key | `""` |
+| **SSL验证模式** | 见下表 | `default` |
+| 自定义CA证书路径 | 仅 `custom` 模式需要填 | `""` |
+| 允许危险命令 | 是否允许 stop/reload 等命令 | `false` |
 
-### 旧版单服消息互通配置（兼容读取，WebUI已隐藏）
+#### SSL 验证模式
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `sync_chat_mc_to_qq` | MC → QQ 聊天同步 | `false` |
-| `sync_chat_qq_to_mc` | QQ → MC 聊天同步 | `false` |
-| `mc_message_prefix` | MC 消息前缀 | `[MC]` |
-| `qq_message_prefix` | QQ 消息前缀 | `[QQ]` |
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| `default` | 系统CA验证 | Let's Encrypt 等正规证书 |
+| `auto_trust` | 首次连接获取并锁定服务器证书（TOFU），后续验证该证书 | 自签名证书；首次连接必须处于可信网络 |
+| `disable` | 完全跳过验证 | 仅限可信内网临时排查，不建议长期使用 |
+| `custom` | 使用指定路径的 CA 证书文件 | 有证书文件 (.pem/.crt) |
 
-### 权限配置
+> `auto_trust` 类似 SSH 首次连接：第一次连接时获取服务器证书并缓存到插件数据目录的 `certs/`，之后每次连接都验证证书是否匹配。获取失败时插件会保持严格校验，不会自动降级为跳过TLS验证。服务器更换证书后需删除对应缓存并在可信网络中重新信任。
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `admin_ids` | AstrBot消息发送者ID；QQ适配器通常填写QQ号。**留空则所有写操作禁用** | `[]` |
-| `llm_permission_mode` | AI 权限模式：`readonly` 或 `full`。建议仅临时开启 FULL | `readonly` |
-| `enable_dangerous_commands` | 启用危险命令（如 stop） | `false` |
+如果日志出现 `CERTIFICATE_VERIFY_FAILED` 或 `self-signed certificate`，说明请求没有成功，不能据此判断实例为空。请将该面板的SSL模式改为 `auto_trust`，或用 `custom` 指定可信CA证书，然后重启插件。修复后的工具会直接返回连接错误，不再把失败显示成空概览或空实例列表。
 
-## 📖 使用方法
+## 使用方法
 
-### 多服务器管理
-
-```
-/mc servers       - 查看全部服务器及连接方式
-/mc status all    - 检查全部服务器连接状态
-/mc players all   - 汇总全部服务器在线玩家
-/mc use server-2  - 设置当前管理员的默认操作目标
-/mc test server-2 - 测试指定服务器的RCON连接
-/mc log           - 查看操作日志（最近20条）
-/mc security      - 查看当前安全状态
-/mc ai-mode status       - 查看AI权限
-/mc ai-mode full CONFIRM - 明确确认并开启FULL
-/mc ai-mode readonly     - 立即恢复只读
-```
-
-消息互通需要时再使用：
+### 命令
 
 ```text
-/mc bindings                  - 查看当前群的聊天转发绑定及来源
-/mc bindings all              - 查看所有QQ群与服务器的完整绑定图
-/mc bind server-1             - 将当前群通过指令绑定到server-1
-/mc bind server-1 123456789   - 将指定群通过指令绑定到server-1
-/mc unbind server-1 [群号]    - 删除指定群的指令绑定
-/mc unbind all [群号]         - 删除指定群的全部指令绑定
+/mc servers              查看全部服务器
+/mc status [all|服务器ID]  检查连接状态
+/mc players [all|服务器ID] 查看在线玩家
+/mc use <服务器ID>        切换当前操作目标
+/mc test [服务器ID]       测试RCON连接
+
+/mc bind <服务器ID> [群号]  绑定当前群到服务器
+/mc unbind <服务器ID> [群号] 解除绑定
+/mc bindings [all]        查看绑定关系
+
+/mc myid <游戏ID>         绑定QQ用户到MC游戏ID
+/mc myid                  查看当前绑定
+/mc myid clear            解除绑定
+
+/mc cmd                   列出当前服务器的自定义指令
+/mc cmd <名称> [参数...]   执行自定义指令模板
+
+/mc ai-mode status        查看AI权限
+/mc ai-mode full CONFIRM  开启FULL模式（需确认）
+/mc ai-mode readonly      恢复只读
+
+/mc log                   查看操作日志
+/mc security              查看安全状态
 ```
 
-### LLM 自然语言交互
+### LLM 自然语言
 
-默认只能直接询问只读信息，例如：
+默认只读，直接对话即可查询：
 
 ```
 查看在线玩家
-查看全部服务器状态和在线玩家
-```
-
-写操作会在 `READONLY` 下被拒绝。管理员必须亲自输入
-`/mc ai-mode full CONFIRM` 才能临时启用；询问“开启完整权限”只会得到说明，模型不会
-自行修改模式。完成操作后应立即执行 `/mc ai-mode readonly`。
-
-> ⚠️ FULL 模式允许模型执行踢人、封禁、OP、任意命令、世界修改和实例启停。
-> 模型可能产生幻觉、误解意图或选错服务器；启用后的风险与后果由用户自行承担。
-
-### MCSManager 面板管理
-
-```
-查看所有 MCSManager 面板
+查看全部服务器状态
 查看主面板的实例列表
-启动备用面板上的生存服务器
-查看主面板生存服务器的根目录
-读取主面板生存服务器的 /server.properties
+读取生存服的 /server.properties
 ```
 
-面板选择按用户隔离，不会影响其他群或管理员。实例操作支持名称、UUID、列表序号，
-同名实例跨面板重复时必须同时指定面板名称或使用 UUID。
+写操作需要管理员执行 `/mc ai-mode full CONFIRM` 开启。FULL 是全局配置并会保持到管理员主动恢复；完成操作后应立即执行 `/mc ai-mode readonly`。
 
-## 🛠️ 支持的 LLM 工具
+> ⚠️ FULL 模式下模型可执行踢人、封禁、OP、命令、世界修改和实例启停。模型可能产生幻觉或选错目标，风险由用户承担。
 
-### Minecraft 服务器管理
+### MCSManager 面板操作
 
-| 工具名 | 功能 | 权限 |
-|--------|------|------|
-| `minecraft_get_servers` | 查看服务器清单、默认和当前选择 | 只读 |
-| `minecraft_get_status` | 检查一台或全部服务器连接状态 | 只读 |
-| `minecraft_get_ai_permission` | 查看AI权限模式 | 只读 |
-| `minecraft_request_full_access` | 返回人工开启说明，不修改权限 | 只读 |
-| `minecraft_select_server` | 选择后续管理操作的服务器 | 只读 |
-| `list_players` | 查看一台或全部服务器在线玩家 | 只读 |
-| `kick_player` | 踢出玩家 | FULL + 管理员 |
-| `ban_player` | 封禁玩家 | FULL + 管理员 |
-| `pardon_player` | 解封玩家 | FULL + 管理员 |
-| `op_player` | 授予 OP 权限 | FULL + 管理员 |
-| `deop_player` | 移除 OP 权限 | FULL + 管理员 |
-| `whitelist_add` | 添加白名单 | FULL + 管理员 |
-| `whitelist_remove` | 移除白名单 | FULL + 管理员 |
-| `whitelist_list` | 查看白名单 | 只读 |
-| `banlist` | 查看封禁列表 | 只读 |
-| `give_item` | 给予物品 | FULL + 管理员 |
-| `teleport_player` | 传送玩家 | FULL + 管理员 |
-| `set_gamemode` | 设置游戏模式 | FULL + 管理员 |
-| `say_message` | 服务器广播 | FULL + 管理员 |
-| `execute_command` | 执行自定义命令 | FULL + 管理员 |
-| `set_weather` | 设置天气 | FULL + 管理员 |
-| `set_time` | 设置时间 | FULL + 管理员 |
-| `set_difficulty` | 设置难度 | FULL + 管理员 |
-| `set_gamerule` | 设置游戏规则 | FULL + 管理员 |
+```
+查看所有MCSManager面板
+查看乌托邦面板的实例列表
+启动乌托邦面板上的生存服务器
+查看生存服务器的根目录文件
+读取生存服的 /server.properties
+```
 
-### MCSManager 面板管理
+实例操作支持名称、UUID 或列表序号。同名实例跨面板重复时需指定面板名称或使用 UUID。
 
-| 工具名 | 功能 | 权限 |
-|--------|------|------|
-| `mcsmanager_get_panels` | 获取面板列表 | 只读 |
-| `mcsmanager_select_panel` | 选择后续查询/操作面板 | 只读 |
-| `mcsmanager_get_instances` | 获取实例列表 | 只读 |
-| `mcsmanager_list_files` | 查看实例目录 | 只读 |
-| `mcsmanager_read_file` | 读取实例文件内容（管理员） | 管理员，只读 |
-| `mcsmanager_start_instance` | 启动实例 | FULL + 管理员 |
-| `mcsmanager_stop_instance` | 停止实例 | FULL + 管理员 |
-| `mcsmanager_restart_instance` | 重启实例 | FULL + 管理员 |
-| `mcsmanager_send_command` | 发送命令 | FULL + 管理员 |
-| `mcsmanager_get_log` | 获取日志 | 只读 |
-| `mcsmanager_get_overview` | 获取概览 | 只读 |
+### 玩家绑定
 
-目录列表允许读取实例根目录并支持从第 1 页开始分页；文件读取会拒绝 `..` 路径穿越、根目录和
-NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 个字符。当前阶段不提供
-文件写入、删除、移动、复制、压缩、上传或下载。
+绑定QQ用户到MC游戏ID，用于自定义指令模板的 `{sender}` 占位符：
 
-## 🔧 配置示例
+```text
+/mc myid Steve        绑定当前QQ用户到游戏ID Steve
+/mc myid              查看当前绑定
+/mc myid clear        解除绑定
+```
+
+一个游戏ID只能被一个QQ用户绑定，防止冒充。
+
+### 自定义指令模板
+
+在服务器配置的 `custom_commands` 中预配置指令模板。管理员手动执行 `/mc cmd` 不受 LLM 权限模式影响；LLM 调用 `minecraft_run_custom_command` 仍要求 **FULL + 管理员**。模板限制了命令骨架，参数数量必须与占位符一致，最终命令仍会经过危险命令检查。
+
+模板支持两种占位符：
+- `{sender}` → 用户的绑定游戏ID（需先 `/mc myid` 绑定）
+- `<&参数名&>` → 用户提供的参数
+
+配置示例：
+```json
+{
+  "custom_commands": [
+    {
+      "name": "tpa",
+      "description": "传送到指定玩家",
+      "command": "tpa {sender} <&target&>"
+    },
+    {
+      "name": "home",
+      "description": "回家",
+      "command": "home {sender}"
+    }
+  ]
+}
+```
+
+使用：
+```text
+/mc cmd tpa Steve    → 执行 tpa <绑定ID> Steve
+/mc cmd home         → 执行 home <绑定ID>
+```
+
+## LLM 工具列表
+
+### Minecraft 服务器（只读）
+
+| 工具 | 功能 |
+|------|------|
+| `minecraft_get_servers` | 服务器清单 |
+| `minecraft_get_status` | 连接状态 |
+| `minecraft_select_server` | 选择操作目标 |
+| `minecraft_get_ai_permission` | AI权限状态 |
+| `minecraft_request_full_access` | 返回开启FULL的说明 |
+| `list_players` | 在线玩家 |
+| `whitelist_list` | 白名单 |
+| `banlist` | 封禁列表 |
+| `minecraft_get_player_id` | 查询QQ用户绑定的游戏ID |
+| `minecraft_list_custom_commands` | 列出可用的自定义指令 |
+
+### Minecraft 服务器（FULL + 管理员）
+
+| 工具 | 功能 |
+|------|------|
+| `kick_player` | 踢出玩家 |
+| `ban_player` / `pardon_player` | 封禁/解封 |
+| `op_player` / `deop_player` | 授予/移除OP |
+| `whitelist_add` / `whitelist_remove` | 白名单增删 |
+| `give_item` | 给予物品 |
+| `teleport_player` | 传送 |
+| `set_gamemode` | 游戏模式 |
+| `say_message` | 广播 |
+| `tellraw` | 富文本消息 |
+| `title` | 显示标题 |
+| `kill_entity` | 杀死实体 |
+| `clear_inventory` | 清空背包 |
+| `set_experience` | 设置经验 |
+| `summon_entity` | 生成实体 |
+| `save_world` | 保存世界数据 |
+| `send_to_qq_group` | 向绑定群推送消息 |
+| `execute_command` | 自定义命令 |
+| `set_weather` / `set_time` / `set_difficulty` / `set_gamerule` | 世界设置 |
+| `minecraft_run_custom_command` | 执行自定义指令模板 |
+
+### MCSManager 面板
+
+| 工具 | 功能 | 权限 |
+|------|------|------|
+| `mcsmanager_get_panels` | 面板列表 | 只读 |
+| `mcsmanager_select_panel` | 选择面板 | 只读 |
+| `mcsmanager_get_instances` | 实例列表 | 只读 |
+| `mcsmanager_get_overview` | 面板概览 | 只读 |
+| `mcsmanager_get_log` | 实例日志 | 只读 |
+| `mcsmanager_list_files` | 目录浏览 | 只读 |
+| `mcsmanager_read_file` | 读取文件 | 管理员 |
+| `mcsmanager_start_instance` | 启动实例 | FULL |
+| `mcsmanager_stop_instance` | 停止实例 | FULL |
+| `mcsmanager_restart_instance` | 重启实例 | FULL |
+| `mcsmanager_send_command` | 发送命令 | FULL |
+
+## 安全建议
+
+1. `admin_ids` 只填可信用户，生产环境不要留空
+2. `llm_permission_mode` 保持 `readonly`，仅在需要时临时开启 FULL
+3. RCON 不加密，不要暴露到公网，优先用内网或 VPN
+4. 远程 MCSManager 使用 HTTPS，SSL 模式选 `auto_trust` 或 `default`
+5. API Key / RCON 密码使用强密码，不要提交到仓库或发到聊天
+6. `enable_dangerous_commands` 保持 `false`
+7. MCSManager 官方接口会把 `apikey` 放在查询参数中；插件会脱敏本地 httpx 日志，但反向代理和面板访问日志也应限制权限并配置脱敏
+
+## 配置示例
 
 ```json
 {
+  "admin_ids": ["123456789"],
   "llm_permission_mode": "readonly",
   "default_server": "survival",
   "mc_servers": [
@@ -360,7 +249,7 @@ NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 
       "__template_key": "server",
       "server_id": "survival",
       "display_name": "生存服",
-      "qq_group_ids": ["10001", "10002"],
+      "qq_group_ids": ["10001"],
       "rcon": {
         "enabled": true,
         "host": "127.0.0.1",
@@ -369,52 +258,23 @@ NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 
       },
       "message": {
         "sync_chat_mc_to_qq": true,
-        "sync_chat_qq_to_mc": true,
-        "forward_llm_responses_to_mc": false
+        "sync_chat_qq_to_mc": true
       }
     }
   ],
-  "mcsmanager_enabled": true,
   "mcsmanager_panels": [
     {
       "__template_key": "panel",
       "panel_name": "主面板",
-      "url": "http://localhost:23333",
+      "url": "https://mcsm.example.com:23333",
       "api_key": "your_api_key",
+      "ssl_mode": "auto_trust",
       "enable_dangerous_commands": false
     }
-  ],
-  "admin_ids": ["123456789"],
-  "enable_dangerous_commands": false
+  ]
 }
 ```
 
-## 🔐 安全建议
-
-1. 保持 `llm_permission_mode` 为 `readonly`，仅在明确需要时临时开启 FULL
-2. FULL 操作完成后立即运行 `/mc ai-mode readonly`
-3. 在 `admin_ids` 中只填写可信用户；生产环境不要留空
-4. RCON 本身不加密；不要把 RCON 端口直接暴露到公网，优先使用内网、VPN 或安全隧道
-5. 远程 MCSManager/WebSocket 应使用 HTTPS/WSS；HTTP/WS 只适合可信内网，否则密钥或令牌可能被窃听
-6. RCON 和 MCSManager API 使用强密码，不要写入仓库、日志或截图
-7. 保持所有服务器/面板的 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
-
-## 🧪 CI 集成测试
-
-常规 `Quality` 工作流会在 Python 3.10/3.12 下运行代码检查、单元测试、
-MCSManager API 合约测试和真实本地 WebSocket 通信测试。
-
-`Full Integration` 工作流可从 GitHub Actions 页面手动触发。它会：
-
-- 分别在 AstrBot 4.10.4 和当前支持版本下导入、初始化并卸载插件
-- 在 GitHub 托管运行器中临时启动 Minecraft 1.21.1 Docker 服务器
-- 通过真实 RCON 协议执行 `list` 和 `say` 冒烟测试
-- 测试完成后自动销毁 Minecraft 容器，不连接任何生产服务器
-
-## 📄 许可证
+## 许可证
 
 MIT License
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！

@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import websockets
@@ -23,11 +25,168 @@ sys.modules.setdefault("astrbot.api", astrbot_api_module)
 from backends.mcsmanager_backend import (  # noqa: E402
     MCSManagerBackend,
     MCSManagerMultiBackend,
+    MCSManagerRequestError,
+    _MCSManagerApiKeyRedactionFilter,
 )
 from backends.websocket_backend import WebSocketMessageBackend  # noqa: E402
 
 
 class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_httpx_request_logging_redacts_mcsmanager_api_keys(self):
+        secret = "super-secret-api-key"
+        record = logging.LogRecord(
+            "httpx",
+            logging.INFO,
+            __file__,
+            1,
+            'HTTP Request: %s %s "%s %d %s"',
+            (
+                "GET",
+                httpx.URL(f"https://panel.test/api/overview?apikey={secret}&page=1"),
+                "HTTP/1.1",
+                200,
+                "OK",
+            ),
+            None,
+        )
+
+        self.assertTrue(_MCSManagerApiKeyRedactionFilter().filter(record))
+        message = record.getMessage()
+
+        self.assertNotIn(secret, message)
+        self.assertIn("apikey=***", message)
+        self.assertIn("page=1", message)
+
+    async def test_tls_failure_is_actionable_instead_of_becoming_empty_data(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                "self-signed certificate",
+                request=request,
+            )
+
+        backend = MCSManagerBackend(
+            "self-signed", "https://mcsmanager.test", "test-key"
+        )
+        await backend.http_client.aclose()
+        backend.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            with self.assertRaises(MCSManagerRequestError) as context:
+                await backend.get_overview()
+        finally:
+            await backend.terminate()
+
+        message = str(context.exception)
+        self.assertIn("TLS证书验证失败", message)
+        self.assertIn("auto_trust", message)
+        self.assertIn("custom", message)
+
+    async def test_auto_trust_failure_keeps_tls_verification_enabled(self):
+        with (
+            patch.object(
+                MCSManagerBackend, "_fetch_and_cache_cert", return_value=None
+            ) as fetch_certificate,
+            patch(
+                "backends.mcsmanager_backend.asyncio.to_thread",
+                new=AsyncMock(return_value=None),
+            ) as to_thread,
+        ):
+            backend = MCSManagerBackend(
+                "offline",
+                "https://mcsmanager.test",
+                "test-key",
+                ssl_mode="auto_trust",
+            )
+
+            try:
+                fetch_certificate.assert_not_called()
+                await backend._ensure_ssl_ready()
+                self.assertIs(backend.ssl_verify, True)
+                self.assertFalse(backend._ssl_auto_trust_pending)
+                to_thread.assert_awaited_once_with(
+                    fetch_certificate, "https://mcsmanager.test"
+                )
+            finally:
+                await backend.terminate()
+
+    async def test_auto_trust_switch_survives_old_client_close_failure(self):
+        backend = MCSManagerBackend(
+            "self-signed",
+            "https://mcsmanager.test",
+            "test-key",
+            ssl_mode="auto_trust",
+        )
+        await backend.http_client.aclose()
+        old_client = types.SimpleNamespace(
+            aclose=AsyncMock(side_effect=OSError("close failed"))
+        )
+        new_client = types.SimpleNamespace(aclose=AsyncMock())
+        backend.http_client = old_client
+
+        with (
+            patch(
+                "backends.mcsmanager_backend.asyncio.to_thread",
+                new=AsyncMock(return_value="/tmp/test-panel.pem"),
+            ),
+            patch(
+                "backends.mcsmanager_backend.httpx.AsyncClient",
+                return_value=new_client,
+            ) as client_factory,
+        ):
+            await backend._ensure_ssl_ready()
+
+        self.assertIs(backend.http_client, new_client)
+        self.assertEqual(backend.ssl_verify, "/tmp/test-panel.pem")
+        client_factory.assert_called_once_with(
+            timeout=30.0, verify="/tmp/test-panel.pem"
+        )
+        old_client.aclose.assert_awaited_once()
+        await backend.terminate()
+        new_client.aclose.assert_awaited_once()
+
+    async def test_terminate_waits_for_auto_trust_and_closes_replacement(self):
+        backend = MCSManagerBackend(
+            "self-signed",
+            "https://mcsmanager.test",
+            "test-key",
+            ssl_mode="auto_trust",
+        )
+        await backend.http_client.aclose()
+        old_client = types.SimpleNamespace(aclose=AsyncMock())
+        new_client = types.SimpleNamespace(aclose=AsyncMock())
+        backend.http_client = old_client
+        fetch_started = asyncio.Event()
+        allow_fetch_to_finish = asyncio.Event()
+
+        async def delayed_to_thread(*_args):
+            fetch_started.set()
+            await allow_fetch_to_finish.wait()
+            return "/tmp/test-panel.pem"
+
+        with (
+            patch(
+                "backends.mcsmanager_backend.asyncio.to_thread",
+                new=AsyncMock(side_effect=delayed_to_thread),
+            ),
+            patch(
+                "backends.mcsmanager_backend.httpx.AsyncClient",
+                return_value=new_client,
+            ),
+        ):
+            ensure_task = asyncio.create_task(backend._ensure_ssl_ready())
+            await fetch_started.wait()
+            terminate_task = asyncio.create_task(backend.terminate())
+            await asyncio.sleep(0)
+
+            self.assertFalse(terminate_task.done())
+            allow_fetch_to_finish.set()
+            await asyncio.gather(ensure_task, terminate_task)
+
+        self.assertIs(backend.http_client, new_client)
+        old_client.aclose.assert_awaited_once()
+        new_client.aclose.assert_awaited_once()
+
     async def test_multi_panel_discovery_runs_concurrently_and_rejects_duplicates(self):
         first_started = asyncio.Event()
         second_started = asyncio.Event()
@@ -141,6 +300,27 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(started)
         self.assertEqual(len(requests), 5)
 
+    async def test_malformed_instance_payload_is_an_explicit_request_failure(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/overview":
+                return httpx.Response(
+                    200,
+                    json={"status": 200, "data": {"remote": ["bad-node"]}},
+                )
+            return httpx.Response(404, json={"status": 404})
+
+        backend = MCSManagerBackend("primary", "http://mcsmanager.test", "test-key")
+        await backend.http_client.aclose()
+        backend.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            with self.assertRaises(MCSManagerRequestError) as context:
+                await backend.get_instances()
+        finally:
+            await backend.terminate()
+
+        self.assertIn("节点不是对象", str(context.exception))
+
     async def test_command_and_log_requests_use_documented_size_and_headers(self):
         requests = []
 
@@ -169,6 +349,53 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "ok\n")
         self.assertEqual(len(requests), 2)
+
+    async def test_command_success_is_not_reclassified_when_log_fetch_fails(self):
+        backend = MCSManagerBackend("primary", "http://mcsmanager.test", "test-key")
+        backend._make_request = AsyncMock(
+            side_effect=[
+                {"status": 200, "data": True},
+                MCSManagerRequestError("primary", "读取日志超时"),
+            ]
+        )
+
+        try:
+            result = await backend.send_command_to_instance(
+                "daemon-1", "instance-1", "say hello"
+            )
+        finally:
+            await backend.terminate()
+
+        self.assertIn("命令已提交", result)
+        self.assertIn("读取日志超时", result)
+        self.assertEqual(backend._make_request.await_count, 2)
+
+    async def test_instance_log_line_count_is_bounded_and_invalid_size_fails_soft(self):
+        requested_sizes = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requested_sizes.append(request.url.params["size"])
+            return httpx.Response(
+                200,
+                json={
+                    "status": 200,
+                    "data": "\n".join(f"line-{i}" for i in range(600)),
+                },
+            )
+
+        backend = MCSManagerBackend("primary", "http://mcsmanager.test", "test-key")
+        await backend.http_client.aclose()
+        backend.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            bounded = await backend.get_instance_log("daemon-1", "instance-1", 10_000)
+            defaulted = await backend.get_instance_log("daemon-1", "instance-1", "bad")
+        finally:
+            await backend.terminate()
+
+        self.assertEqual(requested_sizes, ["500", "100"])
+        self.assertEqual(len(bounded.splitlines()), 500)
+        self.assertEqual(len(defaulted.splitlines()), 100)
 
     async def test_file_list_and_read_follow_documented_contract(self):
         requests = []

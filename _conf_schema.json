@@ -1,22 +1,22 @@
 {
   "admin_ids": {
     "type": "list",
-    "description": "全局管理员ID列表",
-    "hint": "先填写可信的AstrBot消息发送者ID；QQ适配器通常填写QQ号。留空则所有写操作被禁用",
+    "description": "管理员ID列表",
+    "hint": "填写可信的AstrBot消息发送者ID（QQ适配器通常填QQ号）。留空则所有写操作被禁用",
     "obvious_hint": true,
     "default": []
   },
   "llm_permission_mode": {
     "type": "string",
     "description": "AI管理权限模式",
-    "hint": "默认readonly：LLM只能查询。full允许LLM踢人、封禁、OP、执行命令、修改世界和启停实例；模型可能产生幻觉或选错目标，启用后风险与后果由用户自行承担。建议通过 /mc ai-mode 管理并在操作后立即恢复readonly",
+    "hint": "readonly：LLM只能查询；full：允许LLM踢人、封禁、OP、执行命令、启停实例。模型可能产生幻觉或选错目标，启用full的风险由用户自行承担",
     "obvious_hint": true,
     "options": ["readonly", "full"],
     "default": "readonly"
   },
   "mc_servers": {
     "type": "template_list",
-    "description": "Minecraft服务器与QQ群消息路由",
+    "description": "Minecraft服务器列表",
     "hint": "每张卡片代表一台服务器：填写服务器ID、连接信息、绑定QQ群号和消息方向。同一个群号可填写到多台服务器中，形成多对多路由",
     "obvious_hint": true,
     "default": [],
@@ -44,7 +44,7 @@
           },
           "qq_group_ids": {
             "type": "list",
-            "description": "此服务器绑定的QQ群号",
+            "description": "绑定的QQ群号",
             "hint": "只填写QQ群号，例如 123456789；可添加多个。同一个群号也可填写到其他服务器，实现一个群连接多台服务器",
             "default": []
           },
@@ -104,23 +104,23 @@
           },
           "message": {
             "type": "object",
-            "description": "QQ群消息互通开关与格式",
-            "hint": "以下设置只对上方“此服务器绑定的QQ群号”生效；全部关闭时仍可正常使用服务器管理功能",
+            "description": "QQ群消息互通",
+            "hint": "以下设置只对上方绑定的QQ群生效；全部关闭时仍可正常使用服务器管理功能",
             "items": {
               "sync_chat_mc_to_qq": {
                 "type": "bool",
-                "description": "MC→已绑定QQ群聊天同步",
+                "description": "MC→QQ聊天同步",
                 "default": false
               },
               "sync_chat_qq_to_mc": {
                 "type": "bool",
-                "description": "已绑定QQ群→MC聊天同步",
+                "description": "QQ→MC聊天同步",
                 "default": false
               },
               "forward_llm_responses_to_mc": {
                 "type": "bool",
-                "description": "AstrBot的LLM回复→MC",
-                "hint": "将绑定QQ群中的AI最终回复转发到此服务器，可能产生较多消息，默认关闭",
+                "description": "LLM回复→MC",
+                "hint": "将绑定QQ群中的AI回复转发到此服务器，可能产生较多消息",
                 "default": false
               },
               "forward_player_events": {
@@ -148,6 +148,37 @@
                 "default": "[QQ]"
               }
             }
+          },
+          "custom_commands": {
+            "type": "template_list",
+            "description": "自定义指令模板",
+            "hint": "预配置受控指令模板，支持{sender}(绑定游戏ID)和<&参数名&>占位符。管理员手动使用/mc cmd不受LLM模式影响；LLM调用仍需FULL",
+            "default": [],
+            "templates": {
+              "command": {
+                "name": "自定义指令",
+                "display_item": "name",
+                "items": {
+                  "name": {
+                    "type": "string",
+                    "description": "指令名称",
+                    "hint": "用于/mc cmd <名称>调用",
+                    "default": ""
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "指令说明",
+                    "default": ""
+                  },
+                  "command": {
+                    "type": "string",
+                    "description": "指令模板",
+                    "hint": "支持{sender}和<&参数名&>占位符。例如: tpa {sender} <&target&>",
+                    "default": ""
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -155,89 +186,15 @@
   },
   "default_server": {
     "type": "string",
-    "description": "管理操作的默认服务器ID",
-    "hint": "填写上方某台服务器的server_id；与QQ群绑定无关。留空则使用服务器列表中的第一项",
-    "obvious_hint": true,
+    "description": "默认服务器ID",
+    "hint": "填写上方某台服务器的server_id；留空则使用列表中的第一项",
     "default": ""
-  },
-  "qq_group_bindings": {
-    "type": "template_list",
-    "description": "旧版QQ群绑定（自动迁移）",
-    "hint": "仅用于兼容早期分组式配置。插件会把有效条目自动迁移到对应服务器的QQ群号列表；新配置请直接在Minecraft服务器卡片中填写群号",
-    "obvious_hint": true,
-    "invisible": true,
-    "default": [],
-    "templates": {
-      "binding": {
-        "name": "QQ群绑定",
-        "display_item": "group_id",
-        "items": {
-          "enabled": {
-            "type": "bool",
-            "description": "启用此绑定",
-            "default": true
-          },
-          "group_id": {
-            "type": "string",
-            "description": "QQ群号",
-            "hint": "例如 123456789。每个群只需添加一条配置",
-            "default": ""
-          },
-          "server_ids": {
-            "type": "list",
-            "description": "绑定的服务器ID列表",
-            "hint": "填写Minecraft服务器列表中的server_id，例如 survival、creative；可添加多个",
-            "default": []
-          }
-        }
-      }
-    }
-  },
-  "server_display_name": {
-    "type": "string",
-    "description": "旧版单服显示名称",
-    "hint": "仅当Minecraft服务器列表为空时使用",
-    "invisible": true,
-    "default": "默认服务器"
-  },
-  "rcon_enabled": {
-    "type": "bool",
-    "description": "旧版单服：启用RCON",
-    "hint": "仅当Minecraft服务器列表为空时使用",
-    "invisible": true,
-    "default": false
-  },
-  "rcon_host": {
-    "type": "string",
-    "description": "RCON主机地址",
-    "hint": "Minecraft服务器的IP地址或域名",
-    "invisible": true,
-    "default": "localhost"
-  },
-  "rcon_port": {
-    "type": "int",
-    "description": "RCON端口",
-    "hint": "Minecraft服务器的RCON端口（默认25575）",
-    "invisible": true,
-    "default": 25575
-  },
-  "rcon_password": {
-    "type": "string",
-    "description": "RCON密码",
-    "hint": "Minecraft服务器的RCON密码",
-    "invisible": true,
-    "default": ""
-  },
-  "mcsmanager_enabled": {
-    "type": "bool",
-    "description": "启用MCSManager",
-    "hint": "是否启用MCSManager面板管理",
-    "default": false
   },
   "mcsmanager_panels": {
     "type": "template_list",
     "description": "MCSManager面板列表",
-    "hint": "添加多个MCSManager面板的配置信息",
+    "hint": "添加MCSManager面板。配置后面板管理功能自动启用，无需额外开关",
+    "obvious_hint": true,
     "default": [],
     "templates": {
       "panel": {
@@ -253,18 +210,31 @@
           "url": {
             "type": "string",
             "description": "面板地址",
-            "hint": "MCSManager Web面板地址（如http://localhost:23333）",
+            "hint": "MCSManager Web面板地址（如 http://localhost:23333）",
             "default": ""
           },
           "api_key": {
             "type": "string",
             "description": "API密钥",
-            "hint": "MCSManager面板的API密钥；实例列表接口需要具备管理员权限的API密钥",
+            "hint": "MCSManager面板的API密钥",
+            "default": ""
+          },
+          "ssl_mode": {
+            "type": "string",
+            "description": "SSL验证模式",
+            "hint": "default=系统CA验证（正规证书）；auto_trust=首次获取并锁定自签名证书（仅在可信网络首次连接）；custom=使用下方可信CA证书；disable=跳过验证（不安全，仅限临时排查）",
+            "options": ["default", "auto_trust", "disable", "custom"],
+            "default": "default"
+          },
+          "ssl_cert": {
+            "type": "string",
+            "description": "自定义CA证书路径",
+            "hint": "仅在SSL模式选custom时生效。填写证书文件路径（.pem/.crt）",
             "default": ""
           },
           "enable_dangerous_commands": {
             "type": "bool",
-            "description": "允许控制台危险命令",
+            "description": "允许危险命令",
             "hint": "是否允许通过此面板发送stop、reload等危险命令，默认关闭",
             "default": false
           }
@@ -272,67 +242,137 @@
       }
     }
   },
+  "mcsmanager_enabled": {
+    "type": "bool",
+    "description": "启用MCSManager（旧版）",
+    "hint": "已废弃，面板列表非空时自动启用",
+    "invisible": true,
+    "default": false
+  },
+  "qq_group_bindings": {
+    "type": "template_list",
+    "description": "旧版QQ群绑定（自动迁移）",
+    "hint": "仅用于兼容早期分组式配置。插件会把有效条目自动迁移到对应服务器的QQ群号列表",
+    "invisible": true,
+    "default": [],
+    "templates": {
+      "binding": {
+        "name": "QQ群绑定",
+        "display_item": "group_id",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用此绑定",
+            "default": true
+          },
+          "group_id": {
+            "type": "string",
+            "description": "QQ群号",
+            "default": ""
+          },
+          "server_ids": {
+            "type": "list",
+            "description": "绑定的服务器ID列表",
+            "default": []
+          }
+        }
+      }
+    }
+  },
+  "server_display_name": {
+    "type": "string",
+    "description": "旧版单服显示名称",
+    "invisible": true,
+    "default": "默认服务器"
+  },
+  "rcon_enabled": {
+    "type": "bool",
+    "description": "旧版单服：启用RCON",
+    "invisible": true,
+    "default": false
+  },
+  "rcon_host": {
+    "type": "string",
+    "description": "旧版RCON主机地址",
+    "invisible": true,
+    "default": "localhost"
+  },
+  "rcon_port": {
+    "type": "int",
+    "description": "旧版RCON端口",
+    "invisible": true,
+    "default": 25575
+  },
+  "rcon_password": {
+    "type": "string",
+    "description": "旧版RCON密码",
+    "invisible": true,
+    "default": ""
+  },
   "websocket_enabled": {
     "type": "bool",
-    "description": "启用WebSocket",
-    "hint": "是否启用WebSocket连接（用于鹊桥模组或自定义适配器）",
+    "description": "旧版启用WebSocket",
     "invisible": true,
     "default": false
   },
   "websocket_url": {
     "type": "string",
-    "description": "WebSocket地址",
+    "description": "旧版WebSocket地址",
     "invisible": true,
-    "hint": "鹊桥模组或自定义适配器的WebSocket地址",
     "default": "ws://127.0.0.1:8080/minecraft/ws"
   },
   "websocket_token": {
     "type": "string",
-    "description": "WebSocket令牌",
-    "hint": "WebSocket连接的认证令牌",
+    "description": "旧版WebSocket令牌",
     "invisible": true,
     "default": ""
   },
   "enable_dangerous_commands": {
     "type": "bool",
-    "description": "启用危险命令",
-    "hint": "是否启用stop等危险命令。建议保持关闭",
+    "description": "旧版启用危险命令",
     "invisible": true,
     "default": false
   },
   "enable_chat_response": {
     "type": "bool",
-    "description": "旧版单服：LLM回复→MC",
-    "hint": "将绑定QQ群中的AI最终回复转发到旧版单服，可能产生较多消息，默认关闭",
+    "description": "旧版LLM回复→MC",
     "invisible": true,
     "default": false
   },
   "sync_chat_mc_to_qq": {
     "type": "bool",
-    "description": "MC→QQ聊天同步",
-    "hint": "是否将MC聊天消息同步到绑定的QQ群",
+    "description": "旧版MC→QQ聊天同步",
     "invisible": true,
     "default": false
   },
   "sync_chat_qq_to_mc": {
     "type": "bool",
-    "description": "QQ→MC聊天同步",
-    "hint": "是否将QQ群消息同步到MC服务器",
+    "description": "旧版QQ→MC聊天同步",
     "invisible": true,
     "default": false
   },
   "mc_message_prefix": {
     "type": "string",
-    "description": "MC消息前缀",
-    "hint": "MC消息在QQ群中的前缀标识",
+    "description": "旧版MC消息前缀",
     "invisible": true,
     "default": "[MC]"
   },
   "qq_message_prefix": {
     "type": "string",
-    "description": "QQ消息前缀",
-    "hint": "QQ消息在MC中的前缀标识",
+    "description": "旧版QQ消息前缀",
     "invisible": true,
     "default": "[QQ]"
+  },
+  "ssl_verify": {
+    "type": "bool",
+    "description": "旧版SSL验证",
+    "invisible": true,
+    "default": true
+  },
+  "ssl_auto_trust": {
+    "type": "bool",
+    "description": "旧版自动信任证书",
+    "invisible": true,
+    "default": false
   }
 }

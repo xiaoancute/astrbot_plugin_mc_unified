@@ -81,20 +81,26 @@ class WebSocketMessageBackend(MessageBackend):
             return False
 
         self.total_retries += 1
-        if self.total_retries >= self.max_retries:
-            logger.error(
-                f"WebSocket连接失败次数已达到最大限制({self.max_retries}次)，停止重试"
+        if self.max_retries > 0 and self.total_retries >= self.max_retries:
+            wait_time = min(
+                max(
+                    self.reconnect_interval,
+                    self.reconnect_interval * self.max_retries,
+                ),
+                60,
             )
-            self.should_reconnect = False
-            return False
-
-        wait_time = min(self.reconnect_interval * self.total_retries, 60)
-        logger.error(
-            f"WebSocket连接错误: {error}, 将在{wait_time}秒后尝试重新连接..."
-            f"(第{self.total_retries}次)"
-        )
+            logger.error(
+                f"WebSocket连续连接失败已达到{self.max_retries}次，"
+                f"进入持续低频重试，将在{wait_time}秒后继续"
+            )
+        else:
+            wait_time = min(self.reconnect_interval * self.total_retries, 60)
+            logger.error(
+                f"WebSocket连接错误: {error}, 将在{wait_time}秒后尝试重新连接..."
+                f"(第{self.total_retries}次)"
+            )
         await asyncio.sleep(wait_time)
-        return True
+        return self.should_reconnect
 
     async def start_listening(self):
         self.should_reconnect = True
@@ -130,6 +136,9 @@ class WebSocketMessageBackend(MessageBackend):
     async def _handle_message(self, message: str):
         try:
             data = json.loads(message)
+            if not isinstance(data, dict):
+                logger.error("WebSocket JSON消息必须是对象")
+                return
             event_name = data.get("event_name", "")
             player_data = data.get("player", "")
 
@@ -157,9 +166,14 @@ class WebSocketMessageBackend(MessageBackend):
                     await self._player_leave_callback(player_name)
 
             elif event_name == "player_death" or event_name == "death":
-                death_text = data.get("death", {}).get("text", "") or data.get(
-                    "message", ""
-                )
+                death_data = data.get("death")
+                if isinstance(death_data, dict):
+                    death_text = death_data.get("text", "")
+                elif isinstance(death_data, str):
+                    death_text = death_data
+                else:
+                    death_text = ""
+                death_text = death_text or data.get("message", "")
                 if self._player_death_callback and death_text:
                     await self._player_death_callback(player_name, death_text)
 

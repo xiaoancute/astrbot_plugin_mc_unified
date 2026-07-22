@@ -51,13 +51,16 @@ class PermissionManager:
         return False
 
     def check_permission(
-        self, user_id: str, action: str = "unknown"
+        self,
+        user_id: str,
+        action: str = "unknown",
+        enforce_rate_limit: bool = True,
     ) -> tuple[bool, str]:
         if not self.is_admin(user_id):
             self._log_action(user_id, action, False, "权限不足")
             return False, f"❌ 权限不足：用户 {user_id} 不在管理员列表中"
 
-        if not self._check_rate_limit(user_id):
+        if enforce_rate_limit and not self._check_rate_limit(user_id):
             self._log_action(user_id, action, False, "操作过于频繁")
             return False, "❌ 操作过于频繁，请稍后再试"
 

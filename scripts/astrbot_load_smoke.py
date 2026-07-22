@@ -85,7 +85,6 @@ async def main() -> None:
     panel_plugin = plugin_module.MCUnifiedPlugin(
         DummyContext(),
         {
-            "mcsmanager_enabled": True,
             "mcsmanager_panels": [
                 {
                     "panel_name": "primary",

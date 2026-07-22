@@ -1,4 +1,6 @@
 import asyncio
+import os
+import re
 import shutil
 from contextlib import suppress
 from functools import partial
@@ -16,6 +18,7 @@ from .tools.mc_tools import MinecraftTools
 from .tools.mcsmanager_tools import MCSManagerTools
 from .managers.permission_manager import PermissionManager
 from .managers.binding_manager import GroupBindingManager
+from .managers.player_binding_manager import PlayerBindingManager
 from .managers.server_manager import ServerRegistry, build_server_profiles
 from .utils.message_utils import MessageUtils
 
@@ -49,6 +52,8 @@ class MCUnifiedPlugin(Star):
 
         self.permission_manager = None
         self.binding_manager = None
+        self.player_bindings = None
+        self._custom_commands: dict[str, dict[str, dict]] = {}
 
         self._init_backends()
         self._init_tools()
@@ -129,11 +134,14 @@ class MCUnifiedPlugin(Star):
             f"默认服务器: {self.server_registry.default_server_id or '无'}"
         )
 
-        if self.config.get("mcsmanager_enabled", False):
+        raw_panels = self.config.get("mcsmanager_panels", []) or []
+        if not isinstance(raw_panels, list):
+            logger.warning("MCSManager面板配置必须是列表，已忽略无效值")
+            raw_panels = []
+        if raw_panels or self.config.get("mcsmanager_enabled", False):
             self.mcsmanager_multi_backend = MCSManagerMultiBackend()
-            panels = self.config.get("mcsmanager_panels", [])
-            if panels:
-                for index, panel in enumerate(panels, 1):
+            if raw_panels:
+                for index, panel in enumerate(raw_panels, 1):
                     if not isinstance(panel, dict):
                         logger.warning(f"忽略无效的MCSManager面板配置 #{index}")
                         continue
@@ -146,8 +154,31 @@ class MCUnifiedPlugin(Star):
                             "enable_dangerous_commands",
                             self.config.get("enable_dangerous_commands", False),
                         )
+                        # SSL 模式：优先读 ssl_mode，兼容旧版 ssl_verify/ssl_auto_trust
+                        ssl_mode = panel.get("ssl_mode", "")
+                        if not ssl_mode:
+                            # 旧版配置迁移
+                            if panel.get(
+                                "ssl_auto_trust",
+                                self.config.get("ssl_auto_trust", False),
+                            ):
+                                ssl_mode = "auto_trust"
+                            elif not panel.get(
+                                "ssl_verify", self.config.get("ssl_verify", True)
+                            ):
+                                ssl_mode = "disable"
+                            else:
+                                ssl_mode = "default"
+                        ssl_cert = panel.get("ssl_cert", "")
+                        cert_dir = os.path.join(self.data_dir, "certs")
                         self.mcsmanager_multi_backend.add_backend(
-                            name, url, api_key, dangerous_commands_enabled
+                            name,
+                            url,
+                            api_key,
+                            dangerous_commands_enabled,
+                            ssl_mode,
+                            ssl_cert,
+                            cert_dir,
                         )
                     else:
                         logger.warning(
@@ -171,6 +202,8 @@ class MCUnifiedPlugin(Star):
             self.server_registry.default_server_id
         )
         self.mc_tools = default_profile.mc_tools if default_profile else None
+
+        self._load_custom_commands()
 
         if self.mcsmanager_multi_backend:
             self.mcsmanager_tools = MCSManagerTools(self.mcsmanager_multi_backend)
@@ -231,8 +264,91 @@ class MCUnifiedPlugin(Star):
         )
         configured_count = sum(len(groups) for groups in configured_bindings.values())
         logger.info(f"WebUI已配置 {configured_count} 条QQ群与服务器绑定关系")
+        self.player_bindings = PlayerBindingManager(self.data_dir)
         if self.permission_manager.is_llm_full_access():
             logger.warning(PermissionManager.FULL_WARNING)
+
+    def _load_custom_commands(self):
+        """Parse custom command templates from server config."""
+        seen_server_ids = set()
+        for raw in self.config.get("mc_servers", []):
+            if not isinstance(raw, dict) or not raw.get("enabled", True):
+                continue
+            server_id = str(raw.get("server_id", "")).strip()
+            commands = raw.get("custom_commands", [])
+            if not server_id or not isinstance(commands, list):
+                continue
+            canonical_server_id = self.server_registry.match_id(server_id)
+            if not canonical_server_id:
+                logger.warning(f"忽略未知服务器 {server_id} 的自定义指令配置")
+                continue
+            server_id = canonical_server_id
+            if server_id in seen_server_ids:
+                logger.warning(f"忽略重复服务器 {server_id} 的自定义指令配置")
+                continue
+            seen_server_ids.add(server_id)
+            parsed = {}
+            for index, cmd in enumerate(commands, 1):
+                if not isinstance(cmd, dict):
+                    continue
+                name = str(cmd.get("name", "")).strip()
+                template = str(cmd.get("command", "")).strip()
+                if not name or not template:
+                    continue
+                if len(name) > 64 or any(
+                    character.isspace() or ord(character) < 32 for character in name
+                ):
+                    logger.warning(
+                        f"忽略服务器 {server_id} 中名称无效的自定义指令 #{index}"
+                    )
+                    continue
+                if any(character in template for character in "\x00\r\n"):
+                    logger.warning(
+                        f"忽略服务器 {server_id} 中包含控制字符的自定义指令 {name}"
+                    )
+                    continue
+                if name in parsed:
+                    logger.warning(
+                        f"忽略服务器 {server_id} 中重复的自定义指令名称: {name}"
+                    )
+                    continue
+                params = list(dict.fromkeys(re.findall(r"<&(\w+)&>", template)))
+                parsed[name] = {
+                    "description": str(cmd.get("description", "")),
+                    "command": template,
+                    "params": params,
+                }
+            if parsed:
+                self._custom_commands[server_id] = parsed
+
+    def _format_custom_command(
+        self, template: str, sender_game_id: str, params: list[str]
+    ) -> str:
+        """Replace {sender} and <&param&> placeholders in a command template."""
+        if template.startswith("<<") and ">>" in template:
+            cmd = template[template.find(">>") + 2 :].strip()
+        else:
+            cmd = template.strip()
+
+        cmd = cmd.replace("{sender}", sender_game_id or "@s")
+        param_names = list(dict.fromkeys(re.findall(r"<&(\w+)&>", cmd)))
+        replacements = dict(zip(param_names, params))
+        return re.sub(
+            r"<&(\w+)&>",
+            lambda match: replacements.get(match.group(1), match.group(0)),
+            cmd,
+        )
+
+    def _list_custom_commands(self, server_id: str) -> str:
+        commands = self._custom_commands.get(server_id, {})
+        if not commands:
+            return f"ℹ️ 服务器 {server_id} 没有配置自定义指令"
+        lines = [f"📋 自定义指令 ({server_id}):"]
+        for name, cmd in commands.items():
+            params_str = " ".join(f"<{p}>" for p in cmd["params"])
+            desc = f" - {cmd['description']}" if cmd["description"] else ""
+            lines.append(f"  /mc cmd {name} {params_str}{desc}")
+        return "\n".join(lines)
 
     async def initialize(self):
         for profile in self.server_registry.all():
@@ -257,7 +373,7 @@ class MCUnifiedPlugin(Star):
             if websocket_task:
                 try:
                     await asyncio.wait_for(websocket_task, timeout=5)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     websocket_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await websocket_task
@@ -501,10 +617,15 @@ class MCUnifiedPlugin(Star):
         )
 
     def _check_permission(
-        self, event: AstrMessageEvent, action: str = "unknown"
+        self,
+        event: AstrMessageEvent,
+        action: str = "unknown",
+        enforce_rate_limit: bool = True,
     ) -> tuple[bool, str]:
         user_id = event.get_sender_id()
-        return self.permission_manager.check_permission(user_id, action)
+        return self.permission_manager.check_permission(
+            user_id, action, enforce_rate_limit=enforce_rate_limit
+        )
 
     def _check_read_only(
         self, event: AstrMessageEvent, action: str = "read_only"
@@ -835,12 +956,22 @@ class MCUnifiedPlugin(Star):
         confirmation: str = "",
     ):
         """查看或切换AI的READONLY/FULL权限模式。"""
-        has_permission, error_msg = self._check_permission(event, "mc_ai_mode")
+        requested = str(mode or "status").strip().casefold()
+        is_emergency_downgrade = requested in {
+            "readonly",
+            "read-only",
+            "read_only",
+            "只读",
+        }
+        has_permission, error_msg = self._check_permission(
+            event,
+            "mc_ai_mode",
+            enforce_rate_limit=not is_emergency_downgrade,
+        )
         if not has_permission:
             yield event.plain_result(error_msg)
             return
 
-        requested = str(mode or "status").strip().casefold()
         if requested in {"status", "show", "查看", "状态"}:
             yield event.plain_result(self._format_llm_permission_status())
             return
@@ -881,6 +1012,97 @@ class MCUnifiedPlugin(Star):
             f"{PermissionManager.FULL_WARNING}\n"
             "建议完成操作后立即执行 /mc ai-mode readonly。"
         )
+
+    @mc.command("myid")
+    async def cmd_mc_myid(self, event: AstrMessageEvent, game_id: str = ""):
+        """绑定或查看当前用户的Minecraft游戏ID。"""
+        user_id = str(event.get_sender_id() or "")
+        if not game_id:
+            current = self.player_bindings.get_player(user_id)
+            if current:
+                yield event.plain_result(f"📋 当前绑定: {user_id} → {current}")
+            else:
+                yield event.plain_result(
+                    "ℹ️ 尚未绑定游戏ID。使用 /mc myid <游戏ID> 绑定"
+                )
+            return
+
+        if game_id.casefold() in {"clear", "remove", "解绑"}:
+            success, msg = self.player_bindings.unbind(user_id)
+            yield event.plain_result(msg)
+            return
+
+        success, msg = self.player_bindings.bind(user_id, game_id)
+        yield event.plain_result(msg)
+
+    @mc.command("cmd")
+    async def cmd_mc_custom(
+        self,
+        event: AstrMessageEvent,
+        command_name: str = "",
+        *args,
+    ):
+        """执行服务器配置的自定义指令模板。"""
+        has_permission, error_msg = self._check_permission(event, "mc_cmd")
+        if not has_permission:
+            yield event.plain_result(error_msg)
+            return
+
+        if not command_name:
+            server_id, _ = self._resolve_server_id(event)
+            if server_id:
+                yield event.plain_result(self._list_custom_commands(server_id))
+            else:
+                yield event.plain_result("❌ 无法确定当前服务器")
+            return
+
+        server_id, resolve_error = self._resolve_server_id(event)
+        if not server_id:
+            yield event.plain_result(resolve_error)
+            return
+
+        commands = self._custom_commands.get(server_id, {})
+        if command_name not in commands:
+            yield event.plain_result(
+                f"❌ 找不到自定义指令: {command_name}\n"
+                f"可用: {', '.join(commands) if commands else '无'}"
+            )
+            return
+
+        template = commands[command_name]["command"]
+        required_params = commands[command_name]["params"]
+        provided_params = list(args)
+
+        if len(provided_params) < len(required_params):
+            missing = required_params[len(provided_params) :]
+            yield event.plain_result(
+                f"❌ 缺少参数: {' '.join(f'<{p}>' for p in missing)}\n"
+                f"用法: /mc cmd {command_name} "
+                f"{' '.join(f'<{p}>' for p in required_params)}"
+            )
+            return
+        if len(provided_params) > len(required_params):
+            yield event.plain_result(
+                f"❌ 参数过多：{command_name} 需要 {len(required_params)} 个参数，"
+                f"实际收到 {len(provided_params)} 个"
+            )
+            return
+
+        user_id = str(event.get_sender_id() or "")
+        game_id = self.player_bindings.get_player(user_id) or ""
+        if "{sender}" in template and not game_id:
+            yield event.plain_result(
+                "❌ 此指令需要游戏ID绑定。请先使用 /mc myid <游戏ID> 绑定"
+            )
+            return
+
+        formatted = self._format_custom_command(template, game_id, provided_params)
+        mc_tools, error, _ = self._get_mc_tools(event, server_id)
+        if not mc_tools:
+            yield event.plain_result(error)
+            return
+
+        yield event.plain_result(await mc_tools.execute_command(formatted))
 
     async def _test_rcon_connection(self, server_id: str) -> tuple[bool, str]:
         profile = self.server_registry.get(server_id)
@@ -1512,7 +1734,7 @@ class MCUnifiedPlugin(Star):
 
         Args:
             identifier(string): 实例名称、UUID 或列表序号。
-            size(number): 最多返回的日志行数。
+            size(number): 最多返回的日志行数，范围 1 至 500。
             panel_name(string, optional): 实例所属面板。
         """
         has_permission, error_msg = self._check_read_only(event, "mcsmanager_get_log")
@@ -1607,3 +1829,317 @@ class MCUnifiedPlugin(Star):
         return await self.mcsmanager_tools.read_file(
             identifier, target, selected_panel, max_chars
         )
+
+    # ── 扩展 LLM 工具 ──────────────────────────────────────────
+
+    @filter.llm_tool(name="tellraw")
+    async def tool_tellraw(
+        self,
+        event: AstrMessageEvent,
+        message: str,
+        color: str = "yellow",
+        target: str = "@a",
+        server_name: str = "",
+    ) -> str:
+        """发送JSON格式富文本消息到游戏内聊天框。
+
+        Args:
+            message(string): 消息内容。
+            color(string): 文字颜色，如 yellow、red、green、white。
+            target(string): 目标选择器，默认@a（所有玩家）。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(event, "tellraw")
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.tellraw(message, "Bot", color, target)
+
+    @filter.llm_tool(name="title")
+    async def tool_title(
+        self,
+        event: AstrMessageEvent,
+        title_text: str,
+        subtitle_text: str = "",
+        color: str = "white",
+        target: str = "@a",
+        server_name: str = "",
+    ) -> str:
+        """在游戏内显示大字标题。
+
+        Args:
+            title_text(string): 主标题文本。
+            subtitle_text(string, optional): 副标题文本。
+            color(string): 文字颜色。
+            target(string): 目标选择器，默认@a。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(event, "title")
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.title(title_text, subtitle_text, color, target)
+
+    @filter.llm_tool(name="kill_entity")
+    async def tool_kill_entity(
+        self,
+        event: AstrMessageEvent,
+        target: str,
+        server_name: str = "",
+    ) -> str:
+        """杀死实体（玩家、怪物等）。
+
+        Args:
+            target(string): 目标选择器或实体名称，如 @e[type=zombie] 或 Steve。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "kill_entity"
+        )
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.kill_entity(target)
+
+    @filter.llm_tool(name="clear_inventory")
+    async def tool_clear_inventory(
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        item: str = "",
+        server_name: str = "",
+    ) -> str:
+        """清空玩家背包中的物品。
+
+        Args:
+            player(string): 玩家名称。
+            item(string, optional): 物品ID；留空则清空整个背包。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "clear_inventory"
+        )
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.clear_inventory(player, item or None)
+
+    @filter.llm_tool(name="set_experience")
+    async def tool_set_experience(
+        self,
+        event: AstrMessageEvent,
+        player: str,
+        amount: int,
+        operation: str = "set",
+        unit: str = "points",
+        server_name: str = "",
+    ) -> str:
+        """设置或增加玩家经验值。
+
+        Args:
+            player(string): 玩家名称。
+            amount(number): 经验数量。
+            operation(string): set或add。
+            unit(string): points或levels。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "set_experience"
+        )
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.set_experience(player, amount, operation, unit)
+
+    @filter.llm_tool(name="summon_entity")
+    async def tool_summon_entity(
+        self,
+        event: AstrMessageEvent,
+        entity: str,
+        x: float = None,
+        y: float = None,
+        z: float = None,
+        server_name: str = "",
+    ) -> str:
+        """在指定坐标生成实体。
+
+        Args:
+            entity(string): 实体ID，如 minecraft:zombie。
+            x(number, optional): X坐标。
+            y(number, optional): Y坐标。
+            z(number, optional): Z坐标。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "summon_entity"
+        )
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.summon_entity(entity, x, y, z)
+
+    @filter.llm_tool(name="save_world")
+    async def tool_save_world(
+        self, event: AstrMessageEvent, server_name: str = ""
+    ) -> str:
+        """保存服务器世界数据。
+
+        Args:
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "save_world"
+        )
+        if not has_permission:
+            return error_msg
+        mc_tools, error, _ = self._get_mc_tools(event, server_name)
+        if not mc_tools:
+            return error
+        return await mc_tools.save_world()
+
+    @filter.llm_tool(name="send_to_qq_group")
+    async def tool_send_to_qq_group(
+        self,
+        event: AstrMessageEvent,
+        message: str,
+        server_name: str = "",
+    ) -> str:
+        """向绑定到服务器的QQ群主动推送消息。
+
+        Args:
+            message(string): 要推送的消息内容。
+            server_name(string, optional): 服务器ID；不填则使用当前选择的服务器。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "send_to_qq_group"
+        )
+        if not has_permission:
+            return error_msg
+
+        server_id, resolve_error = self._resolve_server_id(event, server_name)
+        if not server_id:
+            return resolve_error
+
+        bound_groups = self._get_bound_groups(server_id)
+        if not bound_groups:
+            return f"❌ 服务器 {server_id} 没有绑定的QQ群"
+
+        success_count = 0
+        for group_id in bound_groups:
+            if await self._send_to_qq_group(group_id, message):
+                success_count += 1
+        total_count = len(bound_groups)
+        if success_count == total_count:
+            return f"✅ 已推送到全部 {total_count} 个QQ群"
+        if success_count:
+            return f"⚠️ 仅推送到 {success_count}/{total_count} 个QQ群，请检查日志"
+        return f"❌ 未能推送到任何QQ群（0/{total_count}），请检查会话记录和日志"
+
+    @filter.llm_tool(name="minecraft_get_player_id")
+    async def tool_minecraft_get_player_id(
+        self, event: AstrMessageEvent, user_id: str = ""
+    ) -> str:
+        """查询QQ用户绑定的Minecraft游戏ID。
+
+        Args:
+            user_id(string, optional): QQ用户ID；不填则查询当前用户。
+        """
+        has_permission, error_msg = self._check_read_only(
+            event, "minecraft_get_player_id"
+        )
+        if not has_permission:
+            return error_msg
+        target = user_id or str(event.get_sender_id() or "")
+        game_id = self.player_bindings.get_player(target)
+        if game_id:
+            return f"用户 {target} 绑定的游戏ID: {game_id}"
+        return f"用户 {target} 尚未绑定游戏ID"
+
+    @filter.llm_tool(name="minecraft_list_custom_commands")
+    async def tool_minecraft_list_custom_commands(
+        self, event: AstrMessageEvent, server_name: str = ""
+    ) -> str:
+        """查看服务器可用的自定义指令模板。
+
+        Args:
+            server_name(string, optional): 服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_read_only(
+            event, "minecraft_list_custom_commands"
+        )
+        if not has_permission:
+            return error_msg
+        server_id, resolve_error = self._resolve_server_id(event, server_name)
+        if not server_id:
+            return resolve_error
+        return self._list_custom_commands(server_id)
+
+    @filter.llm_tool(name="minecraft_run_custom_command")
+    async def tool_minecraft_run_custom_command(
+        self,
+        event: AstrMessageEvent,
+        command_name: str,
+        params: str = "",
+        server_name: str = "",
+    ) -> str:
+        """执行服务器预配置的自定义指令模板（比execute_command更安全）。
+
+        Args:
+            command_name(string): 自定义指令名称。
+            params(string, optional): 参数，空格分隔。
+            server_name(string, optional): 目标服务器ID或显示名称。
+        """
+        has_permission, error_msg = self._check_llm_write_permission(
+            event, "minecraft_run_custom_command"
+        )
+        if not has_permission:
+            return error_msg
+
+        server_id, resolve_error = self._resolve_server_id(event, server_name)
+        if not server_id:
+            return resolve_error
+
+        commands = self._custom_commands.get(server_id, {})
+        if command_name not in commands:
+            available = ", ".join(commands) if commands else "无"
+            return f"❌ 找不到自定义指令: {command_name}。可用: {available}"
+
+        template = commands[command_name]["command"]
+        required_params = commands[command_name]["params"]
+        provided_params = params.split() if params else []
+
+        if len(provided_params) < len(required_params):
+            missing = required_params[len(provided_params) :]
+            return (
+                f"❌ 缺少参数: {' '.join(f'<{p}>' for p in missing)}\n"
+                f"用法: {command_name} "
+                f"{' '.join(f'<{p}>' for p in required_params)}"
+            )
+        if len(provided_params) > len(required_params):
+            return (
+                f"❌ 参数过多：{command_name} 需要 {len(required_params)} 个参数，"
+                f"实际收到 {len(provided_params)} 个"
+            )
+
+        user_id = str(event.get_sender_id() or "")
+        game_id = self.player_bindings.get_player(user_id) or ""
+        if "{sender}" in template and not game_id:
+            return "❌ 此指令需要游戏ID绑定。请先使用 /mc myid <游戏ID> 绑定"
+
+        formatted = self._format_custom_command(template, game_id, provided_params)
+        mc_tools, error, _ = self._get_mc_tools(event, server_id)
+        if not mc_tools:
+            return error
+        return await mc_tools.execute_command(formatted)
