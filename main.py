@@ -52,6 +52,7 @@ class MCUnifiedPlugin(Star):
 
         self._init_backends()
         self._init_tools()
+        self._migrate_legacy_group_config()
         self._init_managers()
 
         if not self.permission_manager.is_security_enabled():
@@ -174,17 +175,56 @@ class MCUnifiedPlugin(Star):
         if self.mcsmanager_multi_backend:
             self.mcsmanager_tools = MCSManagerTools(self.mcsmanager_multi_backend)
 
+    def _migrate_legacy_group_config(self) -> None:
+        previous_servers = self.config.get("mc_servers", [])
+        previous_bindings = self.config.get("qq_group_bindings", [])
+        (
+            migrated_servers,
+            remaining_bindings,
+            migrated_count,
+            changed,
+            warnings,
+        ) = GroupBindingManager.migrate_legacy_config(
+            previous_servers, previous_bindings
+        )
+        for warning in warnings:
+            logger.warning(warning)
+        if not changed:
+            return
+
+        self.config["mc_servers"] = migrated_servers
+        self.config["qq_group_bindings"] = remaining_bindings
+        save_config = getattr(self.config, "save_config", None)
+        if callable(save_config):
+            try:
+                save_config()
+            except Exception as error:
+                self.config["mc_servers"] = previous_servers
+                self.config["qq_group_bindings"] = previous_bindings
+                logger.warning(f"旧版QQ群绑定自动迁移保存失败，继续使用旧配置: {error}")
+                return
+        logger.info(f"已将 {migrated_count} 条旧版QQ群绑定迁移到对应服务器配置")
+
     def _init_managers(self):
         admin_ids = self.config.get("admin_ids", [])
         llm_mode = self.config.get("llm_permission_mode", "readonly")
         self.permission_manager = PermissionManager(admin_ids, llm_mode)
-        configured_bindings, binding_warnings = (
+        server_bindings, server_binding_warnings = (
+            GroupBindingManager.normalize_server_bindings(
+                self.config.get("mc_servers", []),
+                set(self.server_registry.profiles),
+            )
+        )
+        legacy_bindings, legacy_binding_warnings = (
             GroupBindingManager.normalize_configured_bindings(
                 self.config.get("qq_group_bindings", []),
                 set(self.server_registry.profiles),
             )
         )
-        for warning in binding_warnings:
+        configured_bindings = GroupBindingManager.merge_configured_bindings(
+            server_bindings, legacy_bindings
+        )
+        for warning in server_binding_warnings + legacy_binding_warnings:
             logger.warning(warning)
         self.binding_manager = GroupBindingManager(
             self.data_dir, configured_bindings=configured_bindings

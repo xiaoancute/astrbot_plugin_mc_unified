@@ -1,4 +1,11 @@
 {
+  "admin_ids": {
+    "type": "list",
+    "description": "全局管理员ID列表",
+    "hint": "先填写可信的AstrBot消息发送者ID；QQ适配器通常填写QQ号。留空则所有写操作被禁用",
+    "obvious_hint": true,
+    "default": []
+  },
   "llm_permission_mode": {
     "type": "string",
     "description": "AI管理权限模式",
@@ -7,17 +14,10 @@
     "options": ["readonly", "full"],
     "default": "readonly"
   },
-  "default_server": {
-    "type": "string",
-    "description": "管理操作的默认服务器ID",
-    "hint": "管理工具未明确指定服务器时使用；与QQ群绑定无关。留空则使用服务器列表中的第一项",
-    "obvious_hint": true,
-    "default": ""
-  },
   "mc_servers": {
     "type": "template_list",
-    "description": "第1步：Minecraft服务器列表",
-    "hint": "先添加所有要管理的服务器。每台服务器可直接被命令和LLM工具指定；这里不填写QQ群号。配置后旧版单服连接项不再生效",
+    "description": "Minecraft服务器与QQ群消息路由",
+    "hint": "每张卡片代表一台服务器：填写服务器ID、连接信息、绑定QQ群号和消息方向。同一个群号可填写到多台服务器中，形成多对多路由",
     "obvious_hint": true,
     "default": [],
     "templates": {
@@ -33,14 +33,20 @@
           "server_id": {
             "type": "string",
             "description": "服务器ID",
-            "hint": "唯一标识，例如 server-1、server-2；用于命令和LLM工具，也可用于可选的聊天转发绑定",
-            "default": "survival"
+            "hint": "必填且唯一，例如 survival、creative；用于命令和LLM工具",
+            "default": ""
           },
           "display_name": {
             "type": "string",
             "description": "显示名称",
             "hint": "发送消息和列出服务器时展示的名称",
-            "default": "生存服"
+            "default": ""
+          },
+          "qq_group_ids": {
+            "type": "list",
+            "description": "此服务器绑定的QQ群号",
+            "hint": "只填写QQ群号，例如 123456789；可添加多个。同一个群号也可填写到其他服务器，实现一个群连接多台服务器",
+            "default": []
           },
           "enable_dangerous_commands": {
             "type": "bool",
@@ -98,8 +104,8 @@
           },
           "message": {
             "type": "object",
-            "description": "第3步：此服务器的消息互通行为",
-            "hint": "这里只控制这台服务器如何收发消息，不填写群号；群与服务器的对应关系请在下方QQ群绑定列表中设置",
+            "description": "QQ群消息互通开关与格式",
+            "hint": "以下设置只对上方“此服务器绑定的QQ群号”生效；全部关闭时仍可正常使用服务器管理功能",
             "items": {
               "sync_chat_mc_to_qq": {
                 "type": "bool",
@@ -147,11 +153,19 @@
       }
     }
   },
+  "default_server": {
+    "type": "string",
+    "description": "管理操作的默认服务器ID",
+    "hint": "填写上方某台服务器的server_id；与QQ群绑定无关。留空则使用服务器列表中的第一项",
+    "obvious_hint": true,
+    "default": ""
+  },
   "qq_group_bindings": {
     "type": "template_list",
-    "description": "第2步：QQ群 ↔ 服务器绑定（多对多）",
-    "hint": "每条配置代表一个QQ群，可填写一个或多个服务器ID。同一服务器可出现在多个群配置中，同一群也可绑定多台服务器。这里只决定消息流向，不决定管理目标",
+    "description": "旧版v1.5.0QQ群绑定（自动迁移）",
+    "hint": "仅用于兼容v1.5.0。插件会把有效条目自动迁移到对应服务器的QQ群号列表；新配置请直接在Minecraft服务器卡片中填写群号",
     "obvious_hint": true,
+    "invisible": true,
     "default": [],
     "templates": {
       "binding": {
@@ -278,12 +292,6 @@
     "hint": "WebSocket连接的认证令牌",
     "invisible": true,
     "default": ""
-  },
-  "admin_ids": {
-    "type": "list",
-    "description": "管理员列表",
-    "hint": "允许使用管理功能的AstrBot消息发送者ID；QQ适配器通常填写QQ号。留空则所有写操作被禁用",
-    "default": []
   },
   "enable_dangerous_commands": {
     "type": "bool",

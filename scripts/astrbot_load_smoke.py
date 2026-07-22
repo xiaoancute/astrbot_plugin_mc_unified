@@ -31,39 +31,37 @@ async def main() -> None:
     await plugin.initialize()
     await plugin.terminate()
 
-    multi_plugin = plugin_module.MCUnifiedPlugin(
-        DummyContext(),
-        {
-            "default_server": "creative",
-            "mc_servers": [
-                {
-                    "server_id": "survival",
-                    "display_name": "Survival",
-                    "rcon": {
-                        "enabled": True,
-                        "host": "127.0.0.1",
-                        "port": 25575,
-                        "password": "smoke-only",
-                    },
+    multi_config = {
+        "default_server": "creative",
+        "mc_servers": [
+            {
+                "server_id": "survival",
+                "display_name": "Survival",
+                "rcon": {
+                    "enabled": True,
+                    "host": "127.0.0.1",
+                    "port": 25575,
+                    "password": "smoke-only",
                 },
-                {
-                    "server_id": "creative",
-                    "display_name": "Creative",
-                    "message": {
-                        "sync_chat_qq_to_mc": True,
-                        "forward_llm_responses_to_mc": True,
-                    },
+            },
+            {
+                "server_id": "creative",
+                "display_name": "Creative",
+                "message": {
+                    "sync_chat_qq_to_mc": True,
+                    "forward_llm_responses_to_mc": True,
                 },
-            ],
-            "qq_group_bindings": [
-                {
-                    "group_id": "10001",
-                    "server_ids": ["survival", "creative"],
-                },
-                {"group_id": "10002", "server_ids": ["survival"]},
-            ],
-        },
-    )
+            },
+        ],
+        "qq_group_bindings": [
+            {
+                "group_id": "10001",
+                "server_ids": ["survival", "creative"],
+            },
+            {"group_id": "10002", "server_ids": ["survival"]},
+        ],
+    }
+    multi_plugin = plugin_module.MCUnifiedPlugin(DummyContext(), multi_config)
     assert set(multi_plugin.server_registry.profiles) == {"survival", "creative"}
     assert multi_plugin.server_registry.default_server_id == "creative"
     assert multi_plugin.server_registry.get("survival").mc_tools is not None
@@ -77,6 +75,9 @@ async def main() -> None:
         "10001",
         "10002",
     ]
+    assert multi_config["qq_group_bindings"] == []
+    assert multi_config["mc_servers"][0]["qq_group_ids"] == ["10001", "10002"]
+    assert multi_config["mc_servers"][1]["qq_group_ids"] == ["10001"]
 
     await multi_plugin.initialize()
     await multi_plugin.terminate()

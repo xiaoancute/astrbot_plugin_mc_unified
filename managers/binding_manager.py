@@ -1,5 +1,6 @@
 import json
 import os
+from copy import deepcopy
 from typing import Dict, List
 
 from astrbot.api import logger
@@ -28,7 +29,7 @@ class GroupBindingManager:
     def normalize_configured_bindings(
         raw_bindings, valid_server_ids: set[str]
     ) -> tuple[Dict[str, List[str]], List[str]]:
-        """Convert WebUI group rows into the internal server-to-groups mapping."""
+        """Convert legacy group-centric WebUI rows into server-to-groups mapping."""
         normalized: Dict[str, List[str]] = {}
         warnings = []
         if not raw_bindings:
@@ -70,6 +71,150 @@ class GroupBindingManager:
                 warnings.append(f"QQ群绑定 #{index} 没有可用的服务器ID")
 
         return normalized, warnings
+
+    @staticmethod
+    def normalize_server_bindings(
+        raw_servers, valid_server_ids: set[str]
+    ) -> tuple[Dict[str, List[str]], List[str]]:
+        """Read the server-centric QQ group lists shown in the current WebUI."""
+        normalized: Dict[str, List[str]] = {}
+        warnings = []
+        if not raw_servers:
+            return normalized, warnings
+        if not isinstance(raw_servers, list):
+            return normalized, ["Minecraft服务器配置必须是列表"]
+
+        seen_server_ids = set()
+        for index, entry in enumerate(raw_servers, 1):
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            server_id = str(entry.get("server_id", "") or "").strip()
+            if not server_id:
+                continue
+            if server_id in seen_server_ids:
+                warnings.append(f"忽略重复服务器 #{index} 的QQ群列表: {server_id}")
+                continue
+            seen_server_ids.add(server_id)
+            if server_id not in valid_server_ids:
+                continue
+
+            raw_group_ids = entry.get("qq_group_ids", []) or []
+            if isinstance(raw_group_ids, str):
+                raw_group_ids = [raw_group_ids]
+            if not isinstance(raw_group_ids, list):
+                warnings.append(f"服务器 {server_id} 的QQ群号配置必须是列表")
+                continue
+
+            groups = normalized.setdefault(server_id, [])
+            for raw_group_id in raw_group_ids:
+                group_id = str(raw_group_id or "").strip()
+                if group_id and group_id not in groups:
+                    groups.append(group_id)
+            if not groups:
+                normalized.pop(server_id, None)
+
+        return normalized, warnings
+
+    @staticmethod
+    def merge_configured_bindings(
+        *binding_maps: Dict[str, List[str]],
+    ) -> Dict[str, List[str]]:
+        merged: Dict[str, List[str]] = {}
+        for binding_map in binding_maps:
+            for server_id, group_ids in binding_map.items():
+                groups = merged.setdefault(str(server_id), [])
+                for group_id in group_ids:
+                    group_id = str(group_id)
+                    if group_id not in groups:
+                        groups.append(group_id)
+        return merged
+
+    @staticmethod
+    def migrate_legacy_config(
+        raw_servers, raw_bindings
+    ) -> tuple[list, list, int, bool, List[str]]:
+        """Move valid v1.5.0 group-centric routes into their server profiles."""
+        warnings = []
+        if not raw_bindings:
+            return raw_servers, raw_bindings, 0, False, warnings
+        if not isinstance(raw_servers, list) or not isinstance(raw_bindings, list):
+            warnings.append("旧版QQ群绑定无法自动迁移：服务器或绑定配置不是列表")
+            return raw_servers, raw_bindings, 0, False, warnings
+
+        migrated_servers = deepcopy(raw_servers)
+        server_entries = {}
+        for entry in migrated_servers:
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            server_id = str(entry.get("server_id", "") or "").strip()
+            if server_id and server_id not in server_entries:
+                server_entries[server_id] = entry
+
+        remaining_bindings = []
+        migrated_count = 0
+        changed = False
+        for index, entry in enumerate(raw_bindings, 1):
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                remaining_bindings.append(deepcopy(entry))
+                continue
+
+            group_id = str(entry.get("group_id", "") or "").strip()
+            raw_server_ids = entry.get("server_ids", []) or []
+            if isinstance(raw_server_ids, str):
+                raw_server_ids = [raw_server_ids]
+            if not group_id or not isinstance(raw_server_ids, list):
+                remaining_bindings.append(deepcopy(entry))
+                warnings.append(f"旧版QQ群绑定 #{index} 不完整，已保留原配置")
+                continue
+
+            unresolved_server_ids = []
+            for raw_server_id in raw_server_ids:
+                server_id = str(raw_server_id or "").strip()
+                server_entry = server_entries.get(server_id)
+                if not server_entry:
+                    unresolved_server_ids.append(server_id)
+                    continue
+
+                raw_group_ids = server_entry.get("qq_group_ids", []) or []
+                if isinstance(raw_group_ids, str):
+                    raw_group_ids = [raw_group_ids]
+                if not isinstance(raw_group_ids, list):
+                    raw_group_ids = []
+                group_ids = list(
+                    dict.fromkeys(
+                        str(value or "").strip()
+                        for value in raw_group_ids
+                        if str(value or "").strip()
+                    )
+                )
+                if group_id not in group_ids:
+                    group_ids.append(group_id)
+                    migrated_count += 1
+                server_entry["qq_group_ids"] = group_ids
+                changed = True
+
+            if unresolved_server_ids:
+                remaining_entry = deepcopy(entry)
+                remaining_entry["server_ids"] = unresolved_server_ids
+                remaining_bindings.append(remaining_entry)
+                if len(unresolved_server_ids) != len(raw_server_ids):
+                    changed = True
+                warnings.append(
+                    f"旧版QQ群绑定 #{index} 仍引用不存在的服务器: "
+                    + ", ".join(value or "<空ID>" for value in unresolved_server_ids)
+                )
+            elif raw_server_ids:
+                changed = True
+            else:
+                remaining_bindings.append(deepcopy(entry))
+
+        return (
+            migrated_servers,
+            remaining_bindings,
+            migrated_count,
+            changed,
+            warnings,
+        )
 
     def _load_bindings(self):
         try:

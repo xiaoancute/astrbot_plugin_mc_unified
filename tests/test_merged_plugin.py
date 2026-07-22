@@ -286,6 +286,101 @@ class PermissionToolTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BindingTests(unittest.TestCase):
+    def test_server_centric_bindings_are_many_to_many(self):
+        configured, warnings = GroupBindingManager.normalize_server_bindings(
+            [
+                {
+                    "server_id": "survival",
+                    "qq_group_ids": ["group-1", "group-2", "group-1"],
+                },
+                {"server_id": "creative", "qq_group_ids": ["group-1"]},
+                {"server_id": "missing", "qq_group_ids": ["ignored"]},
+                {"server_id": "creative", "qq_group_ids": ["duplicate"]},
+            ],
+            {"survival", "creative"},
+        )
+
+        self.assertEqual(
+            configured,
+            {
+                "survival": ["group-1", "group-2"],
+                "creative": ["group-1"],
+            },
+        )
+        self.assertTrue(any("重复服务器" in warning for warning in warnings))
+
+    def test_v150_bindings_migrate_into_server_profiles(self):
+        servers, remaining, migrated_count, changed, warnings = (
+            GroupBindingManager.migrate_legacy_config(
+                [
+                    {
+                        "server_id": "survival",
+                        "qq_group_ids": ["existing"],
+                    },
+                    {"server_id": "creative"},
+                ],
+                [
+                    {
+                        "group_id": "group-1",
+                        "server_ids": ["survival", "creative"],
+                    },
+                    {
+                        "group_id": "group-2",
+                        "server_ids": ["survival", "missing"],
+                    },
+                    {
+                        "enabled": False,
+                        "group_id": "disabled",
+                        "server_ids": ["survival"],
+                    },
+                    {"group_id": "invalid", "server_ids": [""]},
+                ],
+            )
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(migrated_count, 3)
+        self.assertEqual(servers[0]["qq_group_ids"], ["existing", "group-1", "group-2"])
+        self.assertEqual(servers[1]["qq_group_ids"], ["group-1"])
+        self.assertEqual(
+            remaining,
+            [
+                {"group_id": "group-2", "server_ids": ["missing"]},
+                {
+                    "enabled": False,
+                    "group_id": "disabled",
+                    "server_ids": ["survival"],
+                },
+                {"group_id": "invalid", "server_ids": [""]},
+            ],
+        )
+        self.assertTrue(any("missing" in warning for warning in warnings))
+        self.assertTrue(any("<空ID>" in warning for warning in warnings))
+
+    def test_v150_migration_rolls_back_when_config_save_fails(self):
+        class FailingConfig(dict):
+            def save_config(self):
+                raise OSError("read-only config")
+
+        config = FailingConfig(
+            {
+                "mc_servers": [{"server_id": "survival"}],
+                "qq_group_bindings": [
+                    {"group_id": "group-1", "server_ids": ["survival"]}
+                ],
+            }
+        )
+        plugin = object.__new__(MCUnifiedPlugin)
+        plugin.config = config
+
+        plugin._migrate_legacy_group_config()
+
+        self.assertEqual(config["mc_servers"], [{"server_id": "survival"}])
+        self.assertEqual(
+            config["qq_group_bindings"],
+            [{"group_id": "group-1", "server_ids": ["survival"]}],
+        )
+
     def test_configured_bindings_are_many_to_many_and_immutable_from_commands(self):
         configured, warnings = GroupBindingManager.normalize_configured_bindings(
             [
@@ -519,14 +614,26 @@ class ServerProfileTests(unittest.TestCase):
 class ToolTargetingTests(unittest.TestCase):
     def test_configuration_schema_exposes_clear_many_to_many_group_routing(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        visible_order = list(schema)
+        self.assertLess(
+            visible_order.index("admin_ids"), visible_order.index("mc_servers")
+        )
+        self.assertLess(
+            visible_order.index("mc_servers"), visible_order.index("default_server")
+        )
 
-        self.assertTrue(schema["mc_servers"]["description"].startswith("第1步"))
-        self.assertTrue(schema["qq_group_bindings"]["description"].startswith("第2步"))
+        server_items = schema["mc_servers"]["templates"]["server"]["items"]
+        self.assertEqual(server_items["server_id"]["default"], "")
+        self.assertEqual(server_items["display_name"]["default"], "")
+        self.assertEqual(server_items["qq_group_ids"]["type"], "list")
+        self.assertIn("同一个群号", server_items["qq_group_ids"]["hint"])
+
+        self.assertTrue(schema["qq_group_bindings"]["invisible"])
+        self.assertIn("自动迁移", schema["qq_group_bindings"]["description"])
         binding_items = schema["qq_group_bindings"]["templates"]["binding"]["items"]
         self.assertEqual(binding_items["group_id"]["type"], "string")
         self.assertEqual(binding_items["server_ids"]["type"], "list")
-        message_schema = schema["mc_servers"]["templates"]["server"]["items"]["message"]
-        self.assertTrue(message_schema["description"].startswith("第3步"))
+        self.assertNotIn("第3步", server_items["message"]["description"])
 
         legacy_fields = {
             "server_display_name",
