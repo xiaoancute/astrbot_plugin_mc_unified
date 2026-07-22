@@ -54,6 +54,14 @@
 
 在 AstrBot 管理面板中配置本插件：
 
+WebUI 建议按以下顺序配置，管理目标和聊天路由是两套独立逻辑：
+
+1. 在 `mc_servers` 添加全部 Minecraft 服务器。
+2. 在 `qq_group_bindings` 设置“哪些群连接哪些服务器”，支持多对多。
+3. 在每台服务器的 `message` 中决定是否开启 MC→QQ、QQ→MC 等消息方向。
+
+管理命令始终按明确的服务器 ID、当前选择、默认服务器解析，不会因为QQ群绑定而改变目标。
+
 ### 多服务器配置
 
 使用 `mc_servers` 添加命名服务器，每个条目均可独立设置：
@@ -121,16 +129,43 @@
 ```
 
 > 未添加 `mc_servers` 时，插件会自动把旧版全局 RCON/WebSocket配置作为
-> `default` 服务器加载，现有单服用户无需立刻迁移。
+> `default` 服务器加载，现有单服用户无需立刻迁移。为了避免新配置界面同时出现两套
+> 重复逻辑，旧版字段已在WebUI隐藏；需要修改连接信息时请迁移到 `mc_servers`。
 
 ### 可选：QQ群消息互通
 
-只有需要聊天转发时才配置群绑定。绑定仅决定消息流向，不影响管理命令选择：
+只有需要聊天转发时才配置 `qq_group_bindings`。绑定是明确的多对多关系，仅决定消息流向，不影响管理命令选择：
 
 - MC→QQ：服务器聊天发送到绑定了该服务器的群
 - QQ→MC：群消息发送到该群绑定且开启同步的服务器
-- 一个群可以绑定多台服务器，但可能产生较多消息，建议按需开启同步开关
+- 一个服务器可以对应一个或多个群
+- 一个群也可以绑定一台或多台服务器；绑定多台时消息会分别转发
 - `forward_llm_responses_to_mc` 决定是否把该群中的最终 AI 回复发回对应服务器，默认关闭
+
+例如：群 `10001` 同时连接生存服和创造服，而生存服还连接另一个群 `10002`：
+
+```json
+{
+  "qq_group_bindings": [
+    {
+      "__template_key": "binding",
+      "enabled": true,
+      "group_id": "10001",
+      "server_ids": ["survival", "creative"]
+    },
+    {
+      "__template_key": "binding",
+      "enabled": true,
+      "group_id": "10002",
+      "server_ids": ["survival"]
+    }
+  ]
+}
+```
+
+WebUI 配置的绑定由配置页管理；群内 `/mc bind` 添加的绑定保存在插件数据中。
+两种来源会合并生效，`/mc bindings all` 会标注每条绑定来自 `WebUI` 还是 `指令`。
+`/mc unbind` 只能删除指令绑定，不能暗中覆盖 WebUI 配置。
 
 升级后，旧绑定群需要先发送一条新群消息，或重新执行一次 `/mc bind`，插件才能记录
 AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造会话地址。
@@ -172,7 +207,7 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 > `api_key` 的权限与生成它的 MCSManager 账户一致。实例列表接口要求管理员权限，
 > 请使用管理员账户生成的 API Key；不要把 Key 提交到仓库或发到聊天中。
 
-### 旧版单服连接配置
+### 旧版单服连接配置（兼容读取，WebUI已隐藏）
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
@@ -181,7 +216,7 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 | `websocket_url` | WebSocket 地址 | `ws://127.0.0.1:8080/minecraft/ws` |
 | `websocket_token` | 认证令牌 | - |
 
-### 旧版单服消息互通配置
+### 旧版单服消息互通配置（兼容读取，WebUI已隐藏）
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
@@ -218,10 +253,12 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 消息互通需要时再使用：
 
 ```text
-/mc bind server-1    - 当前群接收/发送server-1消息
-/mc bindings         - 查看当前群的聊天转发绑定
-/mc unbind server-1  - 解除指定聊天绑定
-/mc unbind all       - 解除当前群全部聊天绑定
+/mc bindings                  - 查看当前群的聊天转发绑定及来源
+/mc bindings all              - 查看所有QQ群与服务器的完整绑定图
+/mc bind server-1             - 将当前群通过指令绑定到server-1
+/mc bind server-1 123456789   - 将指定群通过指令绑定到server-1
+/mc unbind server-1 [群号]    - 删除指定群的指令绑定
+/mc unbind all [群号]         - 删除指定群的全部指令绑定
 ```
 
 ### LLM 自然语言交互
@@ -326,6 +363,18 @@ NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 
         "sync_chat_qq_to_mc": true,
         "forward_llm_responses_to_mc": false
       }
+    }
+  ],
+  "qq_group_bindings": [
+    {
+      "__template_key": "binding",
+      "group_id": "10001",
+      "server_ids": ["survival"]
+    },
+    {
+      "__template_key": "binding",
+      "group_id": "10002",
+      "server_ids": ["survival"]
     }
   ],
   "mcsmanager_enabled": true,

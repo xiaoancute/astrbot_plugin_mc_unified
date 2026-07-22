@@ -55,6 +55,13 @@ async def main() -> None:
                     },
                 },
             ],
+            "qq_group_bindings": [
+                {
+                    "group_id": "10001",
+                    "server_ids": ["survival", "creative"],
+                },
+                {"group_id": "10002", "server_ids": ["survival"]},
+            ],
         },
     )
     assert set(multi_plugin.server_registry.profiles) == {"survival", "creative"}
@@ -62,6 +69,14 @@ async def main() -> None:
     assert multi_plugin.server_registry.get("survival").mc_tools is not None
     assert multi_plugin.server_registry.get("creative").forward_llm_responses_to_mc
     assert multi_plugin.rcon_backend is None
+    assert multi_plugin.binding_manager.get_group_servers("10001") == [
+        "survival",
+        "creative",
+    ]
+    assert multi_plugin.binding_manager.get_bound_groups("survival") == [
+        "10001",
+        "10002",
+    ]
 
     await multi_plugin.initialize()
     await multi_plugin.terminate()

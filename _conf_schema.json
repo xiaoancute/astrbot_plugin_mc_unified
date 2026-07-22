@@ -9,14 +9,16 @@
   },
   "default_server": {
     "type": "string",
-    "description": "默认服务器ID",
-    "hint": "管理工具未明确指定服务器时使用的服务器ID；留空则使用服务器列表中的第一项",
+    "description": "管理操作的默认服务器ID",
+    "hint": "管理工具未明确指定服务器时使用；与QQ群绑定无关。留空则使用服务器列表中的第一项",
+    "obvious_hint": true,
     "default": ""
   },
   "mc_servers": {
     "type": "template_list",
-    "description": "Minecraft服务器列表",
-    "hint": "统一管理的服务器清单。每台服务器可直接被命令和LLM工具指定；配置后旧版单服连接项不再生效",
+    "description": "第1步：Minecraft服务器列表",
+    "hint": "先添加所有要管理的服务器。每台服务器可直接被命令和LLM工具指定；这里不填写QQ群号。配置后旧版单服连接项不再生效",
+    "obvious_hint": true,
     "default": [],
     "templates": {
       "server": {
@@ -96,7 +98,8 @@
           },
           "message": {
             "type": "object",
-            "description": "可选：QQ群消息互通",
+            "description": "第3步：此服务器的消息互通行为",
+            "hint": "这里只控制这台服务器如何收发消息，不填写群号；群与服务器的对应关系请在下方QQ群绑定列表中设置",
             "items": {
               "sync_chat_mc_to_qq": {
                 "type": "bool",
@@ -144,34 +147,71 @@
       }
     }
   },
+  "qq_group_bindings": {
+    "type": "template_list",
+    "description": "第2步：QQ群 ↔ 服务器绑定（多对多）",
+    "hint": "每条配置代表一个QQ群，可填写一个或多个服务器ID。同一服务器可出现在多个群配置中，同一群也可绑定多台服务器。这里只决定消息流向，不决定管理目标",
+    "obvious_hint": true,
+    "default": [],
+    "templates": {
+      "binding": {
+        "name": "QQ群绑定",
+        "display_item": "group_id",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用此绑定",
+            "default": true
+          },
+          "group_id": {
+            "type": "string",
+            "description": "QQ群号",
+            "hint": "例如 123456789。每个群只需添加一条配置",
+            "default": ""
+          },
+          "server_ids": {
+            "type": "list",
+            "description": "绑定的服务器ID列表",
+            "hint": "填写Minecraft服务器列表中的server_id，例如 survival、creative；可添加多个",
+            "default": []
+          }
+        }
+      }
+    }
+  },
   "server_display_name": {
     "type": "string",
     "description": "旧版单服显示名称",
     "hint": "仅当Minecraft服务器列表为空时使用",
+    "invisible": true,
     "default": "默认服务器"
   },
   "rcon_enabled": {
     "type": "bool",
     "description": "旧版单服：启用RCON",
     "hint": "仅当Minecraft服务器列表为空时使用",
+    "invisible": true,
     "default": false
   },
   "rcon_host": {
     "type": "string",
     "description": "RCON主机地址",
     "hint": "Minecraft服务器的IP地址或域名",
+    "invisible": true,
     "default": "localhost"
   },
   "rcon_port": {
     "type": "int",
     "description": "RCON端口",
     "hint": "Minecraft服务器的RCON端口（默认25575）",
+    "invisible": true,
     "default": 25575
   },
   "rcon_password": {
     "type": "string",
     "description": "RCON密码",
     "hint": "Minecraft服务器的RCON密码",
+    "invisible": true,
     "default": ""
   },
   "mcsmanager_enabled": {
@@ -222,11 +262,13 @@
     "type": "bool",
     "description": "启用WebSocket",
     "hint": "是否启用WebSocket连接（用于鹊桥模组或自定义适配器）",
+    "invisible": true,
     "default": false
   },
   "websocket_url": {
     "type": "string",
     "description": "WebSocket地址",
+    "invisible": true,
     "hint": "鹊桥模组或自定义适配器的WebSocket地址",
     "default": "ws://127.0.0.1:8080/minecraft/ws"
   },
@@ -234,6 +276,7 @@
     "type": "string",
     "description": "WebSocket令牌",
     "hint": "WebSocket连接的认证令牌",
+    "invisible": true,
     "default": ""
   },
   "admin_ids": {
@@ -246,36 +289,42 @@
     "type": "bool",
     "description": "启用危险命令",
     "hint": "是否启用stop等危险命令。建议保持关闭",
+    "invisible": true,
     "default": false
   },
   "enable_chat_response": {
     "type": "bool",
     "description": "旧版单服：LLM回复→MC",
     "hint": "将绑定QQ群中的AI最终回复转发到旧版单服，可能产生较多消息，默认关闭",
+    "invisible": true,
     "default": false
   },
   "sync_chat_mc_to_qq": {
     "type": "bool",
     "description": "MC→QQ聊天同步",
     "hint": "是否将MC聊天消息同步到绑定的QQ群",
+    "invisible": true,
     "default": false
   },
   "sync_chat_qq_to_mc": {
     "type": "bool",
     "description": "QQ→MC聊天同步",
     "hint": "是否将QQ群消息同步到MC服务器",
+    "invisible": true,
     "default": false
   },
   "mc_message_prefix": {
     "type": "string",
     "description": "MC消息前缀",
     "hint": "MC消息在QQ群中的前缀标识",
+    "invisible": true,
     "default": "[MC]"
   },
   "qq_message_prefix": {
     "type": "string",
     "description": "QQ消息前缀",
     "hint": "QQ消息在MC中的前缀标识",
+    "invisible": true,
     "default": "[QQ]"
   }
 }

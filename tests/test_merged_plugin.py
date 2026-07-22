@@ -1,5 +1,6 @@
 import ast
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -285,6 +286,67 @@ class PermissionToolTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BindingTests(unittest.TestCase):
+    def test_configured_bindings_are_many_to_many_and_immutable_from_commands(self):
+        configured, warnings = GroupBindingManager.normalize_configured_bindings(
+            [
+                {
+                    "group_id": "group-1",
+                    "server_ids": ["survival", "creative"],
+                },
+                {"group_id": "group-2", "server_ids": ["survival", "missing"]},
+                {"enabled": False, "group_id": "disabled", "server_ids": ["survival"]},
+            ],
+            {"survival", "creative"},
+        )
+
+        self.assertEqual(
+            configured,
+            {
+                "survival": ["group-1", "group-2"],
+                "creative": ["group-1"],
+            },
+        )
+        self.assertTrue(any("missing" in warning for warning in warnings))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = GroupBindingManager(temp_dir, configured)
+            self.assertEqual(
+                manager.get_group_servers("group-1"), ["survival", "creative"]
+            )
+            self.assertEqual(
+                manager.get_bound_groups("survival"), ["group-1", "group-2"]
+            )
+            self.assertEqual(
+                manager.get_binding_sources("group-1", "survival"), ["WebUI"]
+            )
+
+            self.assertFalse(manager.bind_group("group-1", "survival"))
+            self.assertIn("WebUI", manager.last_error)
+            self.assertFalse(manager.unbind_group("group-1", "survival"))
+            self.assertIn("配置页", manager.last_error)
+
+            manager.bindings["survival"] = ["group-1"]
+            self.assertTrue(manager._save_bindings())
+            self.assertTrue(manager.unbind_group("group-1", "survival"))
+            self.assertIn("WebUI配置仍然生效", manager.last_error)
+            self.assertEqual(
+                manager.get_binding_sources("group-1", "survival"), ["WebUI"]
+            )
+
+            self.assertTrue(manager.bind_group("group-3", "survival"))
+            self.assertEqual(
+                manager.get_binding_sources("group-3", "survival"), ["指令"]
+            )
+            self.assertEqual(
+                manager.get_all_group_ids(), ["group-1", "group-2", "group-3"]
+            )
+
+            reloaded = GroupBindingManager(temp_dir, configured)
+            self.assertEqual(
+                reloaded.get_bound_groups("survival"),
+                ["group-1", "group-2", "group-3"],
+            )
+
     def test_binding_is_persisted_atomically(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = GroupBindingManager(temp_dir)
@@ -455,6 +517,35 @@ class ServerProfileTests(unittest.TestCase):
 
 
 class ToolTargetingTests(unittest.TestCase):
+    def test_configuration_schema_exposes_clear_many_to_many_group_routing(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(schema["mc_servers"]["description"].startswith("第1步"))
+        self.assertTrue(schema["qq_group_bindings"]["description"].startswith("第2步"))
+        binding_items = schema["qq_group_bindings"]["templates"]["binding"]["items"]
+        self.assertEqual(binding_items["group_id"]["type"], "string")
+        self.assertEqual(binding_items["server_ids"]["type"], "list")
+        message_schema = schema["mc_servers"]["templates"]["server"]["items"]["message"]
+        self.assertTrue(message_schema["description"].startswith("第3步"))
+
+        legacy_fields = {
+            "server_display_name",
+            "rcon_enabled",
+            "rcon_host",
+            "rcon_port",
+            "rcon_password",
+            "websocket_enabled",
+            "websocket_url",
+            "websocket_token",
+            "enable_dangerous_commands",
+            "enable_chat_response",
+            "sync_chat_mc_to_qq",
+            "sync_chat_qq_to_mc",
+            "mc_message_prefix",
+            "qq_message_prefix",
+        }
+        self.assertTrue(all(schema[field]["invisible"] for field in legacy_fields))
+
     def test_minecraft_management_tools_accept_explicit_server_name(self):
         main_path = Path(__file__).resolve().parents[1] / "main.py"
         module = ast.parse(main_path.read_text(encoding="utf-8"))
@@ -554,6 +645,66 @@ class ToolTargetingTests(unittest.TestCase):
 
 
 class PluginMessagingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bind_and_unbind_accept_explicit_group_ids(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin = object.__new__(MCUnifiedPlugin)
+            plugin.permission_manager = PermissionManager(["admin"])
+            plugin.server_registry = ServerRegistry("survival")
+            plugin.server_registry.add(ServerProfile("survival", "生存服"))
+            plugin.server_registry.finalize_default()
+            plugin.binding_manager = GroupBindingManager(temp_dir)
+            plugin._selected_servers = {}
+
+            bind_messages = [
+                value
+                async for value in plugin.cmd_mc_bind(
+                    _FakeEvent(sender_id="admin"), "survival", "group-9"
+                )
+            ]
+
+            self.assertIn("群 group-9", bind_messages[0])
+            self.assertIn("先发送一条消息", bind_messages[0])
+            self.assertEqual(
+                plugin.binding_manager.get_group_servers("group-9"), ["survival"]
+            )
+
+            unbind_messages = [
+                value
+                async for value in plugin.cmd_mc_unbind(
+                    _FakeEvent(sender_id="admin"), "survival", "group-9"
+                )
+            ]
+
+            self.assertIn("已解除群 group-9", unbind_messages[0])
+            self.assertEqual(plugin.binding_manager.get_group_servers("group-9"), [])
+
+    async def test_bindings_command_can_show_all_groups_and_sources(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin = object.__new__(MCUnifiedPlugin)
+            plugin.permission_manager = PermissionManager(["admin"])
+            plugin.server_registry = ServerRegistry("survival")
+            plugin.server_registry.add(ServerProfile("survival", "生存服"))
+            plugin.server_registry.add(ServerProfile("creative", "创造服"))
+            plugin.server_registry.finalize_default()
+            plugin.binding_manager = GroupBindingManager(
+                temp_dir,
+                {"survival": ["group-1", "group-2"], "creative": ["group-1"]},
+            )
+            self.assertTrue(plugin.binding_manager.bind_group("group-3", "survival"))
+
+            messages = [
+                value
+                async for value in plugin.cmd_mc_bindings(
+                    _FakeEvent(sender_id="admin"), "all"
+                )
+            ]
+
+            self.assertIn("群 group-1", messages[0])
+            self.assertIn("生存服 (survival) [WebUI]", messages[0])
+            self.assertIn("创造服 (creative) [WebUI]", messages[0])
+            self.assertIn("群 group-3", messages[0])
+            self.assertIn("[指令]", messages[0])
+
     async def test_proactive_group_send_uses_saved_umo_and_message_chain(self):
         plugin = object.__new__(MCUnifiedPlugin)
         plugin.binding_manager = types.SimpleNamespace(

@@ -178,7 +178,19 @@ class MCUnifiedPlugin(Star):
         admin_ids = self.config.get("admin_ids", [])
         llm_mode = self.config.get("llm_permission_mode", "readonly")
         self.permission_manager = PermissionManager(admin_ids, llm_mode)
-        self.binding_manager = GroupBindingManager(self.data_dir)
+        configured_bindings, binding_warnings = (
+            GroupBindingManager.normalize_configured_bindings(
+                self.config.get("qq_group_bindings", []),
+                set(self.server_registry.profiles),
+            )
+        )
+        for warning in binding_warnings:
+            logger.warning(warning)
+        self.binding_manager = GroupBindingManager(
+            self.data_dir, configured_bindings=configured_bindings
+        )
+        configured_count = sum(len(groups) for groups in configured_bindings.values())
+        logger.info(f"WebUI已配置 {configured_count} 条QQ群与服务器绑定关系")
         if self.permission_manager.is_llm_full_access():
             logger.warning(PermissionManager.FULL_WARNING)
 
@@ -309,6 +321,32 @@ class MCUnifiedPlugin(Star):
         return self.server_registry.normalize_bound_ids(
             self.binding_manager.get_group_servers(group_id)
         )
+
+    def _format_group_bindings(self, group_ids: list[str]) -> str:
+        lines = ["🔗 QQ群与Minecraft服务器绑定:"]
+        for group_id in group_ids:
+            server_ids = self._get_group_server_ids(group_id)
+            if not server_ids:
+                lines.append(f"- 群 {group_id}: 无有效服务器绑定")
+                continue
+            lines.append(f"- 群 {group_id}:")
+            for server_id in server_ids:
+                profile = self.server_registry.get(server_id)
+                sources = "/".join(
+                    self.binding_manager.get_binding_sources(group_id, server_id)
+                )
+                if (
+                    not sources
+                    and server_id == self.server_registry.default_server_id
+                    and server_id != "default"
+                ):
+                    sources = "/".join(
+                        self.binding_manager.get_binding_sources(group_id, "default")
+                    )
+                lines.append(
+                    f"  - {profile.label} ({server_id}) [{sources or '未知来源'}]"
+                )
+        return "\n".join(lines)
 
     def _resolve_server_id(
         self, event: AstrMessageEvent, requested: str = ""
@@ -574,42 +612,49 @@ class MCUnifiedPlugin(Star):
         )
 
     @mc.command("bindings")
-    async def cmd_mc_bindings(self, event: AstrMessageEvent):
-        """查看当前QQ群的消息转发绑定。"""
+    async def cmd_mc_bindings(self, event: AstrMessageEvent, group_id: str = ""):
+        """查看当前群、指定群或全部QQ群的消息转发绑定。"""
         has_permission, error_msg = self._check_read_only(event, "mc_bindings")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
 
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("❌ 请在QQ群中使用此命令")
+        requested_group = str(group_id or "").strip()
+        current_group = str(event.get_group_id() or "")
+        if requested_group.casefold() == "all":
+            group_ids = self.binding_manager.get_all_group_ids()
+        else:
+            target_group = requested_group or current_group
+            group_ids = [target_group] if target_group else []
+        if not group_ids:
+            yield event.plain_result("ℹ️ 尚未配置任何QQ群与服务器绑定")
             return
 
-        server_ids = self._get_group_server_ids(group_id)
-        if not server_ids:
-            yield event.plain_result("ℹ️ 当前群尚未绑定任何服务器")
+        if len(group_ids) == 1 and not self._get_group_server_ids(group_ids[0]):
+            yield event.plain_result(f"ℹ️ 群 {group_ids[0]} 尚未绑定任何服务器")
             return
-
-        labels = [
-            f"{self.server_registry.get(server_id).label} ({server_id})"
-            for server_id in server_ids
-        ]
-        yield event.plain_result("🔗 当前群已绑定:\n- " + "\n- ".join(labels))
+        yield event.plain_result(self._format_group_bindings(group_ids))
 
     @mc.command("bind")
-    async def cmd_mc_bind(self, event: AstrMessageEvent, server_name: str = ""):
-        """将当前QQ群绑定到指定服务器的消息转发。"""
+    async def cmd_mc_bind(
+        self,
+        event: AstrMessageEvent,
+        server_name: str = "",
+        group_id: str = "",
+    ):
+        """将当前或指定QQ群绑定到服务器的消息转发。"""
         has_permission, error_msg = self._check_permission(event, "mc_bind")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
 
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("❌ 请在QQ群中使用此命令")
+        current_group = str(event.get_group_id() or "")
+        target_group = str(group_id or current_group).strip()
+        if not target_group:
+            yield event.plain_result("❌ 请在QQ群中使用，或提供目标QQ群号")
             return
-        self._remember_group_session(event)
+        if target_group == current_group:
+            self._remember_group_session(event)
 
         server_id, resolve_error = self._resolve_server_id(event, server_name)
         if not server_id:
@@ -617,37 +662,43 @@ class MCUnifiedPlugin(Star):
             return
 
         profile = self.server_registry.get(server_id)
-        success = self.binding_manager.bind_group(group_id, server_id)
+        success = self.binding_manager.bind_group(target_group, server_id)
         if success:
-            yield event.plain_result(
-                f"✅ 已将当前群绑定到 {profile.label} ({server_id})"
-            )
+            message = f"✅ 已将群 {target_group} 绑定到 {profile.label} ({server_id})"
+            if target_group != current_group:
+                message += "\nℹ️ 该群需要先发送一条消息，MC→QQ主动转发才能建立会话。"
+            yield event.plain_result(message)
         elif self.binding_manager.last_error:
             yield event.plain_result(f"❌ {self.binding_manager.last_error}")
         else:
-            yield event.plain_result(f"⚠️ 当前群已绑定 {profile.label}")
+            yield event.plain_result(f"⚠️ 群 {target_group} 已绑定 {profile.label}")
 
     @mc.command("unbind")
-    async def cmd_mc_unbind(self, event: AstrMessageEvent, server_name: str = ""):
-        """解除当前QQ群的指定或全部消息转发绑定。"""
+    async def cmd_mc_unbind(
+        self,
+        event: AstrMessageEvent,
+        server_name: str = "",
+        group_id: str = "",
+    ):
+        """解除当前或指定QQ群的指令绑定；WebUI绑定需在配置页删除。"""
         has_permission, error_msg = self._check_permission(event, "mc_unbind")
         if not has_permission:
             yield event.plain_result(error_msg)
             return
 
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("❌ 请在QQ群中使用此命令")
+        target_group = str(group_id or event.get_group_id() or "").strip()
+        if not target_group:
+            yield event.plain_result("❌ 请在QQ群中使用，或提供目标QQ群号")
             return
 
         if server_name.casefold() == "all":
-            success = self.binding_manager.unbind_group_from_all(group_id)
+            success = self.binding_manager.unbind_group_from_all(target_group)
             target_label = "全部服务器"
         else:
-            bound_ids = self._get_group_server_ids(group_id)
+            bound_ids = self._get_group_server_ids(target_group)
             if not server_name and len(bound_ids) > 1:
                 yield event.plain_result(
-                    "❌ 当前群绑定了多个服务器，请使用 mc unbind <服务器ID> 或 mc unbind all"
+                    "❌ 目标群绑定了多个服务器，请使用 mc unbind <服务器ID> [群号] 或 mc unbind all [群号]"
                 )
                 return
             requested = server_name or (bound_ids[0] if bound_ids else "")
@@ -656,21 +707,26 @@ class MCUnifiedPlugin(Star):
                 yield event.plain_result(resolve_error)
                 return
             profile = self.server_registry.get(server_id)
-            success = self.binding_manager.unbind_group(group_id, server_id)
+            success = self.binding_manager.unbind_group(target_group, server_id)
             if (
                 not success
                 and server_id == self.server_registry.default_server_id
                 and server_id != "default"
             ):
-                success = self.binding_manager.unbind_group(group_id, "default")
+                success = self.binding_manager.unbind_group(target_group, "default")
             target_label = profile.label
 
         if success:
-            yield event.plain_result(f"✅ 已解除当前群与{target_label}的绑定")
+            message = f"✅ 已解除群 {target_group} 与{target_label}的指令绑定"
+            if self.binding_manager.last_error:
+                message += f"\nℹ️ {self.binding_manager.last_error}"
+            yield event.plain_result(message)
         elif self.binding_manager.last_error:
             yield event.plain_result(f"❌ {self.binding_manager.last_error}")
         else:
-            yield event.plain_result(f"⚠️ 当前群未绑定{target_label}")
+            yield event.plain_result(
+                f"⚠️ 群 {target_group} 未通过指令绑定{target_label}"
+            )
 
     @mc.command("test")
     async def cmd_mc_test(self, event: AstrMessageEvent, server_name: str = ""):
