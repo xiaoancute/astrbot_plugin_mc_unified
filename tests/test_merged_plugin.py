@@ -964,7 +964,7 @@ class ServerProfileTests(unittest.TestCase):
 
 
 class ToolTargetingTests(unittest.TestCase):
-    def test_public_version_sources_use_one_canonical_release(self):
+    def test_public_version_sources_match_latest_release(self):
         metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
         version_line = next(
             line for line in metadata.splitlines() if line.startswith("version:")
@@ -975,8 +975,9 @@ class ToolTargetingTests(unittest.TestCase):
             if line.startswith("## v")
         ]
 
-        self.assertEqual(version_line, "version: 1.0.0")
-        self.assertEqual(changelog_headings, ["## v1.0.0"])
+        self.assertEqual(version_line, "version: 1.0.1")
+        self.assertEqual(changelog_headings, ["## v1.0.1", "## v1.0.0"])
+        self.assertEqual(changelog_headings[0], "## v" + version_line.split()[-1])
 
     def test_configuration_schema_exposes_clear_many_to_many_group_routing(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
