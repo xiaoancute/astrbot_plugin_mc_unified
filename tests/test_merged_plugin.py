@@ -309,7 +309,7 @@ class BindingTests(unittest.TestCase):
         )
         self.assertTrue(any("重复服务器" in warning for warning in warnings))
 
-    def test_v150_bindings_migrate_into_server_profiles(self):
+    def test_legacy_bindings_migrate_into_server_profiles(self):
         servers, remaining, migrated_count, changed, warnings = (
             GroupBindingManager.migrate_legacy_config(
                 [
@@ -357,7 +357,7 @@ class BindingTests(unittest.TestCase):
         self.assertTrue(any("missing" in warning for warning in warnings))
         self.assertTrue(any("<空ID>" in warning for warning in warnings))
 
-    def test_v150_migration_rolls_back_when_config_save_fails(self):
+    def test_legacy_migration_rolls_back_when_config_save_fails(self):
         class FailingConfig(dict):
             def save_config(self):
                 raise OSError("read-only config")
@@ -612,6 +612,20 @@ class ServerProfileTests(unittest.TestCase):
 
 
 class ToolTargetingTests(unittest.TestCase):
+    def test_public_version_sources_use_one_canonical_release(self):
+        metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
+        version_line = next(
+            line for line in metadata.splitlines() if line.startswith("version:")
+        )
+        changelog_headings = [
+            line
+            for line in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+            if line.startswith("## v")
+        ]
+
+        self.assertEqual(version_line, "version: 1.0.0")
+        self.assertEqual(changelog_headings, ["## v1.0.0"])
+
     def test_configuration_schema_exposes_clear_many_to_many_group_routing(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         visible_order = list(schema)

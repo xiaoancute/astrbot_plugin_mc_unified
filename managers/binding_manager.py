@@ -133,7 +133,7 @@ class GroupBindingManager:
     def migrate_legacy_config(
         raw_servers, raw_bindings
     ) -> tuple[list, list, int, bool, List[str]]:
-        """Move valid v1.5.0 group-centric routes into their server profiles."""
+        """Move valid legacy group-centric routes into their server profiles."""
         warnings = []
         if not raw_bindings:
             return raw_servers, raw_bindings, 0, False, warnings

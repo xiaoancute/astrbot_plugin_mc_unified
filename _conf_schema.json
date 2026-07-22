@@ -162,8 +162,8 @@
   },
   "qq_group_bindings": {
     "type": "template_list",
-    "description": "旧版v1.5.0QQ群绑定（自动迁移）",
-    "hint": "仅用于兼容v1.5.0。插件会把有效条目自动迁移到对应服务器的QQ群号列表；新配置请直接在Minecraft服务器卡片中填写群号",
+    "description": "旧版QQ群绑定（自动迁移）",
+    "hint": "仅用于兼容早期分组式配置。插件会把有效条目自动迁移到对应服务器的QQ群号列表；新配置请直接在Minecraft服务器卡片中填写群号",
     "obvious_hint": true,
     "invisible": true,
     "default": [],

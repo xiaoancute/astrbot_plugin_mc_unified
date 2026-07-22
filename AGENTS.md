@@ -27,3 +27,5 @@ Use standard-library `unittest`. Name files `test_*.py` and test methods `test_*
 ## Commit & Pull Request Guidelines
 
 Follow the existing concise, imperative style, such as `Add multi-server profiles` or `Fix RCON smoke import path`. Keep commits focused and stage only intended files. For pull requests, explain behavior changes, list validation performed, link relevant issues, and include screenshots only for configuration UI changes. Never place secrets or production endpoints in commits, logs, fixtures, or release archives.
+
+Use Semantic Versioning for public releases. Do not publish every internal milestone: collect related work into one release, use patch versions for compatible fixes, minor versions for deliberate backward-compatible features, and major versions only for breaking changes.
