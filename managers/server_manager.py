@@ -2,6 +2,19 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
+def _normalize_port(value: Any, default: int = 25575) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+def _normalize_transport(value: Any) -> str:
+    transport = str(value or "auto").strip().lower()
+    return transport if transport in {"auto", "rcon", "websocket"} else "auto"
+
+
 @dataclass
 class ServerProfile:
     """Configuration and runtime resources for one Minecraft server."""
@@ -51,16 +64,19 @@ def build_server_profiles(config: Any) -> list[ServerProfile]:
             if not server_id:
                 continue
 
-            rcon = raw.get("rcon", {}) or {}
-            websocket = raw.get("websocket", {}) or {}
-            message = raw.get("message", {}) or {}
+            rcon = raw.get("rcon", {})
+            websocket = raw.get("websocket", {})
+            message = raw.get("message", {})
+            rcon = rcon if isinstance(rcon, dict) else {}
+            websocket = websocket if isinstance(websocket, dict) else {}
+            message = message if isinstance(message, dict) else {}
             profiles.append(
                 ServerProfile(
                     server_id=server_id,
                     display_name=str(raw.get("display_name", "") or server_id).strip(),
                     rcon_enabled=bool(rcon.get("enabled", False)),
                     rcon_host=str(rcon.get("host", "localhost")).strip(),
-                    rcon_port=int(rcon.get("port", 25575)),
+                    rcon_port=_normalize_port(rcon.get("port", 25575)),
                     rcon_password=str(rcon.get("password", "")),
                     websocket_enabled=bool(websocket.get("enabled", False)),
                     websocket_url=str(
@@ -79,9 +95,9 @@ def build_server_profiles(config: Any) -> list[ServerProfile]:
                         message.get("mc_message_prefix", "[MC:{server}]")
                     ),
                     qq_message_prefix=str(message.get("qq_message_prefix", "[QQ]")),
-                    message_transport=str(
-                        message.get("transport", "auto") or "auto"
-                    ).lower(),
+                    message_transport=_normalize_transport(
+                        message.get("transport", "auto")
+                    ),
                     enable_dangerous_commands=bool(
                         raw.get(
                             "enable_dangerous_commands",
@@ -100,7 +116,7 @@ def build_server_profiles(config: Any) -> list[ServerProfile]:
             ),
             rcon_enabled=bool(config.get("rcon_enabled", False)),
             rcon_host=str(config.get("rcon_host", "localhost")),
-            rcon_port=int(config.get("rcon_port", 25575)),
+            rcon_port=_normalize_port(config.get("rcon_port", 25575)),
             rcon_password=str(config.get("rcon_password", "")),
             websocket_enabled=bool(config.get("websocket_enabled", False)),
             websocket_url=str(

@@ -239,7 +239,7 @@
   "admin_ids": {
     "type": "list",
     "description": "管理员列表",
-    "hint": "允许使用管理功能的QQ号/MC账号列表。留空则所有写操作被禁用",
+    "hint": "允许使用管理功能的AstrBot消息发送者ID；QQ适配器通常填写QQ号。留空则所有写操作被禁用",
     "default": []
   },
   "enable_dangerous_commands": {

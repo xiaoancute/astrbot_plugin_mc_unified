@@ -1,4 +1,5 @@
 import json
+import math
 from typing import Dict, Any
 
 from .command_safety import find_dangerous_command
@@ -179,20 +180,40 @@ class MCSManagerTools:
         return f"❌ {action}失败: {response.get('error', '未知错误')}"
 
     @staticmethod
-    def _extract_file_entries(response: Dict[str, Any]) -> tuple[list, int]:
+    def _extract_file_entries(
+        response: Dict[str, Any], requested_page: int
+    ) -> tuple[list, int, int]:
         data = response.get("data", {})
         if isinstance(data, list):
-            return data, 1
+            return data, requested_page, 1
         if not isinstance(data, dict):
-            return [], 1
-        entries = data.get("data", data.get("files", data.get("list", [])))
+            return [], requested_page, 1
+        entries = data.get(
+            "items", data.get("data", data.get("files", data.get("list", [])))
+        )
         if not isinstance(entries, list):
             entries = []
+
+        if "total" in data or "pageSize" in data or "page" in data:
+            try:
+                page_index = max(0, int(data.get("page", requested_page - 1)))
+            except (TypeError, ValueError):
+                page_index = requested_page - 1
+            try:
+                page_size = max(1, int(data.get("pageSize", len(entries) or 1)))
+            except (TypeError, ValueError):
+                page_size = len(entries) or 1
+            try:
+                total = max(0, int(data.get("total", len(entries))))
+            except (TypeError, ValueError):
+                total = len(entries)
+            return entries, page_index + 1, max(1, math.ceil(total / page_size))
+
         try:
             max_page = max(1, int(data.get("maxPage", data.get("max_page", 1))))
         except (TypeError, ValueError):
             max_page = 1
-        return entries, max_page
+        return entries, requested_page, max_page
 
     @staticmethod
     def _format_file_entry(entry: Any) -> str:
@@ -200,10 +221,12 @@ class MCSManagerTools:
             return f"- {entry}"
         name = entry.get("name") or entry.get("fileName") or entry.get("filename")
         name = str(name or entry.get("path") or "未命名")
-        is_dir = entry.get(
-            "isDirectory",
-            entry.get("is_dir", entry.get("type") in ("directory", "dir")),
-        )
+        if "isDirectory" in entry:
+            is_dir = bool(entry["isDirectory"])
+        elif "is_dir" in entry:
+            is_dir = bool(entry["is_dir"])
+        else:
+            is_dir = entry.get("type") in (0, "0", "directory", "dir")
         marker = "📁" if is_dir else "📄"
         suffix = "/" if is_dir and not name.endswith("/") else ""
         size = entry.get("size")
@@ -241,18 +264,18 @@ class MCSManagerTools:
             instance["daemon_id"],
             instance["uuid"],
             normalized_target,
-            page,
+            page - 1,
             page_size,
             str(file_name or "").strip(),
         )
         failure = self._file_error(response, "读取目录")
         if failure:
             return failure
-        entries, max_page = self._extract_file_entries(response)
+        entries, current_page, max_page = self._extract_file_entries(response, page)
         heading = f"📁 [{backend.name}] {instance['name']} {normalized_target} 文件列表"
         if not entries:
-            return f"{heading}\n（目录为空）"
-        lines = [f"{heading}（第 {page}/{max_page} 页）:"]
+            return f"{heading}（第 {current_page}/{max_page} 页）\n（目录为空）"
+        lines = [f"{heading}（第 {current_page}/{max_page} 页）:"]
         lines.extend(self._format_file_entry(entry) for entry in entries)
         return "\n".join(lines)
 

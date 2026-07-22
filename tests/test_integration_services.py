@@ -20,11 +20,50 @@ astrbot_module.api = astrbot_api_module
 sys.modules.setdefault("astrbot", astrbot_module)
 sys.modules.setdefault("astrbot.api", astrbot_api_module)
 
-from backends.mcsmanager_backend import MCSManagerBackend  # noqa: E402
+from backends.mcsmanager_backend import (  # noqa: E402
+    MCSManagerBackend,
+    MCSManagerMultiBackend,
+)
 from backends.websocket_backend import WebSocketMessageBackend  # noqa: E402
 
 
 class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_multi_panel_discovery_runs_concurrently_and_rejects_duplicates(self):
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+
+        class FakeBackend:
+            def __init__(self, name, own_event, other_event):
+                self.name = name
+                self.own_event = own_event
+                self.other_event = other_event
+
+            async def get_instances(self):
+                self.own_event.set()
+                await asyncio.wait_for(self.other_event.wait(), timeout=1)
+                return [{"name": self.name}]
+
+        multi = MCSManagerMultiBackend()
+        multi.backends = {
+            "first": FakeBackend("first", first_started, second_started),
+            "second": FakeBackend("second", second_started, first_started),
+        }
+
+        instances = await asyncio.wait_for(multi.get_all_instances(), timeout=2)
+
+        self.assertEqual([item["name"] for item in instances], ["first", "second"])
+
+        duplicate_check = MCSManagerMultiBackend()
+        self.assertTrue(
+            duplicate_check.add_backend("primary", "http://one.test", "test-key")
+        )
+        original = duplicate_check.get_backend("primary")
+        self.assertFalse(
+            duplicate_check.add_backend("primary", "http://two.test", "other-key")
+        )
+        self.assertIs(duplicate_check.get_backend("primary"), original)
+        await duplicate_check.terminate_all()
+
     async def test_overview_instances_and_start_requests(self):
         requests = []
 
@@ -143,7 +182,7 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.url.params["daemonId"], "daemon-1")
                 self.assertEqual(request.url.params["uuid"], "instance-1")
                 self.assertEqual(request.url.params["target"], "/config")
-                self.assertEqual(request.url.params["page"], "2")
+                self.assertEqual(request.url.params["page"], "0")
                 self.assertEqual(request.url.params["page_size"], "25")
                 self.assertEqual(request.url.params["file_name"], "server")
                 return httpx.Response(
@@ -151,8 +190,14 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
                     json={
                         "status": 200,
                         "data": {
-                            "maxPage": 3,
-                            "data": [{"name": "server.properties", "size": 10}],
+                            "items": [
+                                {"name": "config", "size": 0, "type": 0},
+                                {"name": "server.properties", "size": 10, "type": 1},
+                            ],
+                            "page": 0,
+                            "pageSize": 25,
+                            "total": 52,
+                            "absolutePath": "/srv/minecraft/config",
                         },
                     },
                 )
@@ -172,7 +217,7 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             listing = await backend.list_files(
-                "daemon-1", "instance-1", "/config", 2, 25, "server"
+                "daemon-1", "instance-1", "/config", 0, 25, "server"
             )
             content = await backend.read_file(
                 "daemon-1", "instance-1", "/server.properties"
@@ -180,7 +225,7 @@ class MCSManagerContractTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await backend.terminate()
 
-        self.assertEqual(listing["data"]["maxPage"], 3)
+        self.assertEqual(listing["data"]["total"], 52)
         self.assertEqual(content["data"], "motd=hello")
         self.assertEqual(len(requests), 2)
 
@@ -220,7 +265,7 @@ class WebSocketContractTests(unittest.IsolatedAsyncioTestCase):
             listener = asyncio.create_task(backend.start_listening())
 
             await asyncio.wait_for(callback_received.wait(), timeout=5)
-            await backend.send_to_mc("hello from qq")
+            send_result = await backend.send_to_mc("hello from qq")
             outbound = await asyncio.wait_for(server_received.get(), timeout=5)
 
             keep_server_open.set()
@@ -229,3 +274,4 @@ class WebSocketContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(callback_args, [("Steve", "hello from minecraft")])
         self.assertEqual(outbound, {"type": "broadcast", "message": "hello from qq"})
+        self.assertEqual(send_result, "✅ WebSocket消息已发送")

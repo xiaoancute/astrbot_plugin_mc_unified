@@ -221,17 +221,17 @@ class MCSManagerBackend:
         daemon_id: str,
         instance_uuid: str,
         target: str = "/",
-        page: int = 1,
+        page: int = 0,
         page_size: int = 50,
         file_name: str = "",
     ) -> Dict[str, Any]:
         """List one page of files for an instance."""
         try:
-            page = max(1, int(page))
+            page = max(0, int(page))
         except (TypeError, ValueError):
-            page = 1
+            page = 0
         try:
-            page_size = max(1, int(page_size))
+            page_size = min(100, max(1, int(page_size)))
         except (TypeError, ValueError):
             page_size = 50
 
@@ -273,11 +273,15 @@ class MCSManagerMultiBackend:
         url: str,
         api_key: str,
         dangerous_commands_enabled: bool = False,
-    ):
+    ) -> bool:
+        if name in self.backends:
+            logger.warning(f"忽略重复的MCSManager面板名称: {name}")
+            return False
         self.backends[name] = MCSManagerBackend(
             name, url, api_key, dangerous_commands_enabled
         )
         logger.info(f"MCSManager面板 [{name}] 已添加")
+        return True
 
     def remove_backend(self, name: str):
         if name in self.backends:
@@ -296,12 +300,16 @@ class MCSManagerMultiBackend:
 
     async def get_all_instances(self) -> List[Dict[str, Any]]:
         all_instances = []
-        for backend in self.backends.values():
-            try:
-                instances = await backend.get_instances()
-                all_instances.extend(instances)
-            except Exception as e:
-                logger.error(f"获取面板 [{backend.name}] 实例失败: {e}")
+        backends = list(self.backends.values())
+        results = await asyncio.gather(
+            *(backend.get_instances() for backend in backends),
+            return_exceptions=True,
+        )
+        for backend, result in zip(backends, results):
+            if isinstance(result, Exception):
+                logger.error(f"获取面板 [{backend.name}] 实例失败: {result}")
+                continue
+            all_instances.extend(result)
         return all_instances
 
     async def terminate_all(self):

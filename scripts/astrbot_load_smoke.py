@@ -65,6 +65,30 @@ async def main() -> None:
 
     await multi_plugin.initialize()
     await multi_plugin.terminate()
+
+    panel_plugin = plugin_module.MCUnifiedPlugin(
+        DummyContext(),
+        {
+            "mcsmanager_enabled": True,
+            "mcsmanager_panels": [
+                {
+                    "panel_name": "primary",
+                    "url": "http://127.0.0.1:23333",
+                    "api_key": "smoke-only",
+                },
+                {
+                    "panel_name": "primary",
+                    "url": "http://127.0.0.1:24444",
+                    "api_key": "duplicate-smoke-only",
+                },
+                {"panel_name": "incomplete"},
+                "invalid",
+            ],
+        },
+    )
+    assert panel_plugin.mcsmanager_multi_backend.get_backend_names() == ["primary"]
+    await panel_plugin.initialize()
+    await panel_plugin.terminate()
     print("AstrBot plugin load smoke passed")
 
 

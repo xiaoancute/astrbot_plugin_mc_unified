@@ -164,7 +164,7 @@ class WebSocketMessageBackend(MessageBackend):
                     await self._player_death_callback(player_name, death_text)
 
         except json.JSONDecodeError:
-            logger.error(f"无法解析JSON消息: {message}")
+            logger.error(f"无法解析WebSocket JSON消息，长度: {len(message)}")
         except Exception as e:
             logger.error(f"处理WebSocket消息时出错: {str(e)}")
 
@@ -177,17 +177,19 @@ class WebSocketMessageBackend(MessageBackend):
     async def send_to_mc(self, message: str):
         if not self.connected or not self.websocket:
             logger.error("无法发送消息：WebSocket未连接")
-            return
+            return "❌ WebSocket未连接，消息未发送"
 
         try:
             await self.websocket.send(
                 json.dumps({"type": "broadcast", "message": message})
             )
+            return "✅ WebSocket消息已发送"
         except Exception as e:
             logger.error(f"发送消息到MC失败: {e}")
+            return f"❌ WebSocket消息发送失败: {e}"
 
     async def send_to_qq(self, message: str, group_id: str):
-        logger.info(f"WebSocket不直接发送到QQ，消息: {message}, 群号: {group_id}")
+        logger.info(f"WebSocket不直接发送到QQ，目标群: {group_id}")
 
     async def is_connected(self) -> bool:
         return self.connected

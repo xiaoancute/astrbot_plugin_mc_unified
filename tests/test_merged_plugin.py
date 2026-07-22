@@ -398,6 +398,33 @@ class ServerProfileTests(unittest.TestCase):
         self.assertTrue(profiles[1].sync_chat_qq_to_mc)
         self.assertFalse(profiles[1].forward_llm_responses_to_mc)
 
+    def test_invalid_ports_nested_sections_and_transports_fail_soft(self):
+        profiles = build_server_profiles(
+            {
+                "mc_servers": [
+                    {
+                        "server_id": "bad-values",
+                        "rcon": {"enabled": True, "port": "not-a-port"},
+                        "websocket": "invalid",
+                        "message": {"transport": "magic"},
+                    },
+                    {
+                        "server_id": "bad-sections",
+                        "rcon": "invalid",
+                        "message": ["invalid"],
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(profiles[0].rcon_port, 25575)
+        self.assertEqual(profiles[0].message_transport, "auto")
+        self.assertEqual(profiles[1].rcon_port, 25575)
+        self.assertEqual(profiles[1].message_transport, "auto")
+
+        legacy = build_server_profiles({"rcon_enabled": True, "rcon_port": 70000})
+        self.assertEqual(legacy[0].rcon_port, 25575)
+
     def test_registry_uses_explicit_selected_then_default_order(self):
         registry = ServerRegistry("survival")
         registry.add(ServerProfile("survival", "生存服"))
@@ -587,7 +614,10 @@ class _FakePanel:
         self.dangerous_commands_enabled = False
         self.file_list_calls = []
         self.file_read_calls = []
-        self.file_entries = [{"name": "server.properties", "size": 12}]
+        self.file_entries = [
+            {"name": "config", "size": 0, "type": 0},
+            {"name": "server.properties", "size": 12, "type": 1},
+        ]
         self.file_content = "motd=hello"
 
     async def get_instances(self):
@@ -609,7 +639,13 @@ class _FakePanel:
         )
         return {
             "status": 200,
-            "data": {"maxPage": 2, "data": list(self.file_entries)},
+            "data": {
+                "items": list(self.file_entries),
+                "page": page,
+                "pageSize": page_size,
+                "total": 26,
+                "absolutePath": "/srv/minecraft",
+            },
         }
 
     async def read_file(self, daemon_id, instance_uuid, target):
@@ -698,9 +734,11 @@ class MCSManagerTargetTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("server.properties", result)
+        self.assertIn("📁 config/", result)
+        self.assertIn("第 2/2 页", result)
         self.assertEqual(
             primary.file_list_calls,
-            [("daemon-primary", "uuid-1", "/config", 2, 25, "server")],
+            [("daemon-primary", "uuid-1", "/config", 1, 25, "server")],
         )
         self.assertIn(
             "..", await tools.list_files("survival", "../secret", panel_name="primary")

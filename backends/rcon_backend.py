@@ -80,7 +80,10 @@ class RCONBackend(ServerBackend):
                     result = response[0]
                 else:
                     result = str(response)
-                logger.info(f"执行命令: {command}, 响应: {result}")
+                command_name = command.split(maxsplit=1)[0] if command else "空命令"
+                logger.info(
+                    f"RCON命令执行成功: {command_name}，响应长度 {len(result)} 字符"
+                )
                 return True, result if result else "命令执行成功（无返回信息）"
             except (
                 ConnectionRefusedError,

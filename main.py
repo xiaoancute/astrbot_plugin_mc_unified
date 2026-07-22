@@ -132,7 +132,10 @@ class MCUnifiedPlugin(Star):
             self.mcsmanager_multi_backend = MCSManagerMultiBackend()
             panels = self.config.get("mcsmanager_panels", [])
             if panels:
-                for panel in panels:
+                for index, panel in enumerate(panels, 1):
+                    if not isinstance(panel, dict):
+                        logger.warning(f"忽略无效的MCSManager面板配置 #{index}")
+                        continue
                     # template_list 格式: panel_name 字段对应原 name
                     name = panel.get("panel_name", "") or panel.get("name", "")
                     url = panel.get("url", "")
@@ -145,7 +148,15 @@ class MCUnifiedPlugin(Star):
                         self.mcsmanager_multi_backend.add_backend(
                             name, url, api_key, dangerous_commands_enabled
                         )
-                logger.info(f"MCSManager多面板后端已初始化，共 {len(panels)} 个面板")
+                    else:
+                        logger.warning(
+                            f"忽略不完整的MCSManager面板配置 #{index}: "
+                            "需要 panel_name、url 和 api_key"
+                        )
+                logger.info(
+                    "MCSManager多面板后端已初始化，共 "
+                    f"{len(self.mcsmanager_multi_backend.backends)} 个面板"
+                )
 
     def _init_tools(self):
         for profile in self.server_registry.all():

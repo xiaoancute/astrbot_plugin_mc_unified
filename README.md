@@ -43,12 +43,12 @@
 
 ### 方法一：手动安装
 
-1. 将 `mc_unified` 文件夹放置到 AstrBot 的 `data/plugins/` 目录
+1. 从 GitHub Release 下载 ZIP，并将其中的 `astrbot_plugin_mc_unified` 文件夹放置到 AstrBot 的 `data/plugins/` 目录
 2. 重启 AstrBot
 
-### 方法二：通过插件市场安装
+### 插件市场
 
-在 AstrBot 管理面板的「插件管理」中搜索安装。
+本项目目前尚未收录到 AstrBot 官方插件市场，请暂时使用 GitHub Release 安装。
 
 ## ⚙️ 配置
 
@@ -194,7 +194,7 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `admin_ids` | 管理员列表（QQ号或 MC 玩家名）。**留空则所有写操作禁用** | `[]` |
+| `admin_ids` | AstrBot消息发送者ID；QQ适配器通常填写QQ号。**留空则所有写操作禁用** | `[]` |
 | `llm_permission_mode` | AI 权限模式：`readonly` 或 `full`。建议仅临时开启 FULL | `readonly` |
 | `enable_dangerous_commands` | 启用危险命令（如 stop） | `false` |
 
@@ -300,7 +300,7 @@ AstrBot 的真实会话标识并恢复主动 MC→QQ 消息；插件不会伪造
 | `mcsmanager_get_log` | 获取日志 | 只读 |
 | `mcsmanager_get_overview` | 获取概览 | 只读 |
 
-目录列表允许读取实例根目录并支持分页；文件读取会拒绝 `..` 路径穿越、根目录和
+目录列表允许读取实例根目录并支持从第 1 页开始分页；文件读取会拒绝 `..` 路径穿越、根目录和
 NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 个字符。当前阶段不提供
 文件写入、删除、移动、复制、压缩、上传或下载。
 
@@ -338,7 +338,7 @@ NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 
       "enable_dangerous_commands": false
     }
   ],
-  "admin_ids": ["123456789", "Steve"],
+  "admin_ids": ["123456789"],
   "enable_dangerous_commands": false
 }
 ```
@@ -348,8 +348,10 @@ NUL 字符。为避免泄露过大的日志或配置，单次最多返回 12000 
 1. 保持 `llm_permission_mode` 为 `readonly`，仅在明确需要时临时开启 FULL
 2. FULL 操作完成后立即运行 `/mc ai-mode readonly`
 3. 在 `admin_ids` 中只填写可信用户；生产环境不要留空
-4. RCON 和 MCSManager API 使用强密码，不要写入仓库、日志或截图
-5. 保持所有服务器/面板的 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
+4. RCON 本身不加密；不要把 RCON 端口直接暴露到公网，优先使用内网、VPN 或安全隧道
+5. 远程 MCSManager/WebSocket 应使用 HTTPS/WSS；HTTP/WS 只适合可信内网，否则密钥或令牌可能被窃听
+6. RCON 和 MCSManager API 使用强密码，不要写入仓库、日志或截图
+7. 保持所有服务器/面板的 `enable_dangerous_commands` 为 `false`，并用防火墙限制管理端口
 
 ## 🧪 CI 集成测试
 
